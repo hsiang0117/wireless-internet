@@ -1,0 +1,16 @@
+# Local device pairing and connection settings
+/wireless-config.json
+
+# Runtime state and logs
+/state/
+*.log
+
+# Local ADB credentials
+adbkey
+adbkey.pub
+
+# Editor and operating-system files
+.vs/
+.vscode/
+Thumbs.db
+Desktop.ini
