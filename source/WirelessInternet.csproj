@@ -50,8 +50,15 @@
   <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="Backend.cs" />
+    <Compile Include="MonitoringModels.cs" />
+    <Compile Include="SystemSessionObservationSource.cs" />
+    <Compile Include="PhoneTrafficTracker.cs" />
+    <Compile Include="MonitorSnapshotAssembler.cs" />
     <Compile Include="MemoryLog.cs" />
     <Compile Include="AppForm.cs" />
+    <Compile Include="ConsoleLogView.cs" />
+    <Compile Include="DashboardControls.cs" />
+    <Compile Include="UiVisualStyle.cs" />
     <Compile Include="SetupForm.cs" />
     <Compile Include="SetupBackend.cs" />
     <Compile Include="AndroidProtocol.cs" />

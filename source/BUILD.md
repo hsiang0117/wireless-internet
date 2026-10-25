@@ -1,6 +1,6 @@
 ﻿# 源码与构建
 
-本文对应无线网络共享 1.6.0。使用流程见仓库根目录 [README](../README.md)，离线回归见 [tests/README.md](../tests/README.md)。
+本文对应无线网络共享 1.7.0。使用流程见仓库根目录 [README](../README.md)，离线回归见 [tests/README.md](../tests/README.md)。
 
 ## 三个独立项目
 
@@ -8,7 +8,7 @@
 
 | 项目 | 源文件 | 目标 |
 | --- | --- | --- |
-| `WirelessInternet.csproj` | `Program`、`Backend`、`MemoryLog`、`AppForm`、`SetupForm`、`SetupBackend`、`AndroidProtocol`、`UiDpi`、`ProcessExecution`、`SessionStatus`、`UiOperationCoordinator` | `WirelessInternet.exe`，WinExe |
+| `WirelessInternet.csproj` | `Program`、`Backend`、监控组件、日志视图与自绘控件、`MemoryLog`、`AppForm`、`SetupForm`、`SetupBackend`、`AndroidProtocol`、`UiDpi`、`ProcessExecution`、`SessionStatus`、`UiOperationCoordinator` | `WirelessInternet.exe`，WinExe |
 | `ConnectionWorker.csproj` | `WorkerHost`、`RuntimeCommon`、`RuntimeSessionStore`、`OwnedProcessManager`、`AndroidDeviceClient`、`AndroidProtocol`、`NativeNetwork`、`ConnectionController`、`ConnectionOperation`、`WatchdogController`、`PhoneGuardSource`、`ProcessExecution` | `ConnectionWorker.exe`，Exe |
 | `RelayLogHost.csproj` | `RelayLogHost`、`MemoryLog` | `RelayLogHost.exe`，WinExe |
 
@@ -51,6 +51,21 @@ Write-Output $out
 核心互斥锁的名称、获取／释放时机及等待策略保持不变。手机控制与会话提交仍在原有锁范围执行；等待首次监控确认前按原协议释放锁，再通过会话与进程身份重新核验。会话记录按 token 删除，已跟踪进程按 PID、启动时间和路径核验后清理；已提交会话的必要资源按原恢复路径保留，不按进程名称或进程树清理。
 
 ## 显示与运行配置
+
+1.7.0 将桌面监控与渲染拆为独立组件，不改变后台连接、锁与手机守护协议：
+
+| 组件 | 职责 |
+| --- | --- |
+| `MonitoringModels` | 沿用原有快照、观察源接口与采样策略；仅为 GUI 内部源码提取，不更改会话格式或进程通信 |
+| `SystemSessionObservationSource` | 只读会话文件、进程归属、TCP 表、手机计数及内存日志；保持原采样命令和前后验证 |
+| `PhoneTrafficTracker` | 无系统 I/O 的累计流量、速度基线、节流、缓存、暂停与恢复状态 |
+| `MonitorSnapshotAssembler` | 组合会话健康、连接、日志和统计快照，维护原有观察顺序 |
+| `ConsoleLogView` | 有界日志队列、去重、RTF 批次、选择与滚动保留及清空；后台入队不访问控件 |
+| `DashboardControls`／`UiVisualStyle` | 独立自绘控件与不可变视觉值，沿用原布局、字体、颜色、DPI 和图表语义 |
+
+`Backend` 保留原公开入口作为兼容门面。`AppForm` 继续负责布局和用户事件；操作准入、退出和采样互斥仍只由 `UiOperationCoordinator` 管理。日志视图只拥有渲染状态，不另建连接或退出状态。
+
+日志上限及调度保持原值：待显示消息最多 256 条／65536 字符，单批最多 64 条／12288 字符，显示最多 1500 行／200000 字符，单条最多 4096 字符，UI 计时器仍为 120ms。隐藏窗口或连接列表页暂停文字绘制，恢复后保留阅读位置；日志不默认写入文件。
 
 GUI 与 worker 使用 `app.manifest`，保留 `dpiAware=true` 的 SystemAware 声明；`.config` 只声明 .NET Framework 4.8。各运行配置须与其 EXE 相邻。
 

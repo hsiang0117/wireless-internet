@@ -12,8 +12,8 @@ using System.Windows.Forms;
 [assembly: System.Reflection.AssemblyTitle("无线网络共享")]
 [assembly: System.Reflection.AssemblyProduct("无线网络共享")]
 [assembly: System.Reflection.AssemblyDescription("Android 原生无线调试 · gnirehtet 控制与流量监控")]
-[assembly: System.Reflection.AssemblyVersion("1.6.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.6.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.7.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.7.0.0")]
 [assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8")]
 
 namespace WirelessInternet

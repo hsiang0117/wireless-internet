@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
-using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Globalization;
 using System.IO;
@@ -16,13 +15,13 @@ namespace WirelessInternet
 {
     public sealed class AppForm : Form
     {
-        private static readonly Color BackgroundColor = Color.FromArgb(12, 20, 31);
-        private static readonly Color PanelColor = Color.FromArgb(20, 31, 45);
-        private static readonly Color BorderColor = Color.FromArgb(40, 57, 75);
-        private static readonly Color TextColor = Color.FromArgb(235, 243, 250);
-        private static readonly Color MutedColor = Color.FromArgb(146, 166, 186);
-        private static readonly Color AccentColor = Color.FromArgb(48, 216, 192);
-        private static readonly Color UploadColor = Color.FromArgb(113, 161, 255);
+        private static readonly Color BackgroundColor = UiVisualStyle.BackgroundColor;
+        private static readonly Color PanelColor = UiVisualStyle.PanelColor;
+        private static readonly Color BorderColor = UiVisualStyle.BorderColor;
+        private static readonly Color TextColor = UiVisualStyle.TextColor;
+        private static readonly Color MutedColor = UiVisualStyle.MutedColor;
+        private static readonly Color AccentColor = UiVisualStyle.AccentColor;
+        private static readonly Color UploadColor = UiVisualStyle.UploadColor;
         private readonly string _root;
         private readonly bool _preview;
         private readonly Backend _backend;
@@ -57,23 +56,11 @@ namespace WirelessInternet
         private readonly ToolStripMenuItem _trayStop;
         private readonly ToolStripMenuItem _traySettings;
         private readonly ToolStripMenuItem _trayExit;
-        private readonly HashSet<string> _seenLogs = new HashSet<string>(StringComparer.Ordinal);
-        private readonly Queue<string> _seenLogOrder = new Queue<string>();
-        private const int MaximumConsoleLines = 1500;
-        private const int MaximumConsoleCharacters = 200000;
-        private const int MaximumConsoleEntryCharacters = 4096;
-        private const int MaximumPendingLogEntries = 256;
-        private const int MaximumPendingLogCharacters = 65536;
-        private const int MaximumFlushEntries = 64;
-        private const int MaximumFlushCharacters = 12288;
-        private readonly object _pendingLogGate = new object();
-        private readonly Queue<PendingLog> _pendingLogs = new Queue<PendingLog>();
-        private int _pendingLogCharacters;
-        private int _droppedPendingLogCount;
-        private int _pendingDroppedToReport;
-        private readonly Queue<int> _consoleLineLengths = new Queue<int>();
-        private int _consoleLineCount;
-        private int _consoleCharacterCount;
+        private readonly ConsoleLogView _logView;
+        // Read-only compatibility statistics; all mutable log state belongs to the view.
+        private int _consoleLineCount { get { return _logView.ConsoleLineCount; } }
+        private int _consoleCharacterCount { get { return _logView.ConsoleCharacterCount; } }
+        private System.Collections.ICollection _seenLogOrder { get { return _logView.DedupOrderSnapshot; } }
         private Task _pollTask { get { return _operations.PendingPoll; } }
         private Snapshot _snapshot;
         private bool _polling { get { return _operations.IsPolling; } }
@@ -93,21 +80,13 @@ namespace WirelessInternet
         private string _phoneBindingNotice = String.Empty;
         private DateTime _phoneBindingNoticeUntil;
         internal bool AutomaticSetupEnabled { get; set; }
-        private bool _flushingLogs;
         private string _connectionsSignature = String.Empty;
         private bool _refreshPhoneSample = true;
         private bool _phoneStatisticsVisible;
 
-        private sealed class PendingLog
-        {
-            public string TimePrefix, SourcePrefix, Body;
-            public int ColorIndex, Characters;
-            public List<int> LineLengths;
-        }
-
-        internal int PendingLogCount { get { lock (_pendingLogGate) return _pendingLogs.Count; } }
-        internal int PendingLogCharacters { get { lock (_pendingLogGate) return _pendingLogCharacters; } }
-        internal int DroppedPendingLogCount { get { lock (_pendingLogGate) return _droppedPendingLogCount; } }
+        internal int PendingLogCount { get { return _logView.PendingCount; } }
+        internal int PendingLogCharacters { get { return _logView.PendingCharacters; } }
+        internal int DroppedPendingLogCount { get { return _logView.DroppedCount; } }
 
         public AppForm(string root, bool preview) : this(root, preview, new UiOperationCoordinator()) { }
 
@@ -328,6 +307,9 @@ namespace WirelessInternet
             _console.WordWrap = false;
             _console.DetectUrls = false;
             _console.HideSelection = false;
+            _logView = new ConsoleLogView(_console, _autoScroll,
+                delegate { return _operations.IsClosing; },
+                delegate { return !IsDisposed && Visible && WindowState != FormWindowState.Minimized && _logsVisible && _console.Visible; });
             _connections = MakeConnectionGrid();
             _connections.Dock = DockStyle.Fill;
             _connections.Visible = false;
@@ -448,15 +430,6 @@ namespace WirelessInternet
         [DllImport("user32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool PrintWindow(IntPtr window, IntPtr deviceContext, uint flags);
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct NativePoint { public int X, Y; }
-
-        [DllImport("user32.dll", EntryPoint = "SendMessageW")]
-        private static extern IntPtr SendWindowMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
-
-        [DllImport("user32.dll", EntryPoint = "SendMessageW")]
-        private static extern IntPtr SendPointMessage(IntPtr window, int message, IntPtr wParam, ref NativePoint point);
 
         private async void PollOnce()
         {
@@ -620,12 +593,7 @@ namespace WirelessInternet
                         sessionKey + "|" + sourceKey + "|" + item.Time.Ticks.ToString(CultureInfo.InvariantCulture) + "|" +
                         (item.Message ?? String.Empty).GetHashCode().ToString("x8", CultureInfo.InvariantCulture) + "|" +
                         (item.Level ?? String.Empty).GetHashCode().ToString("x8", CultureInfo.InvariantCulture);
-                    if (_seenLogs.Add(key))
-                    {
-                        _seenLogOrder.Enqueue(key);
-                        while (_seenLogOrder.Count > MaximumConsoleLines) _seenLogs.Remove(_seenLogOrder.Dequeue());
-                        AppendLog(item.Time, item.Source, item.Message, item.Level);
-                    }
+                    _logView.AppendUnique(key, item.Time, item.Source, item.Message, item.Level);
                 }
             }
             UpdateButtons();
@@ -638,24 +606,13 @@ namespace WirelessInternet
         }
 
         private static string FormatBytes(ulong bytes)
-        {
-            return FormatSize((double)bytes, false);
-        }
+        { return UiVisualStyle.FormatBytes(bytes); }
 
         private static string FormatRate(double bytes)
-        {
-            if (Double.IsNaN(bytes) || Double.IsInfinity(bytes) || bytes < 0) return "—";
-            return FormatSize(bytes, true);
-        }
+        { return UiVisualStyle.FormatRate(bytes); }
 
         private static string FormatSize(double bytes, bool rate)
-        {
-            if (Double.IsNaN(bytes) || Double.IsInfinity(bytes) || bytes < 0) bytes = 0;
-            string[] units = { "B", "KB", "MB", "GB", "TB" };
-            int index = 0;
-            while (bytes >= 1024 && index < units.Length - 1) { bytes /= 1024; index++; }
-            return bytes.ToString(index == 0 ? "0" : "0.0", CultureInfo.InvariantCulture) + " " + units[index] + (rate ? "/s" : String.Empty);
-        }
+        { return UiVisualStyle.FormatSize(bytes, rate); }
 
         private void UpdateButtons()
         {
@@ -784,250 +741,14 @@ namespace WirelessInternet
         }
 
         private void AppendLog(DateTime time, string source, string message, string level)
-        {
-            // May be called by process-output workers: no Control or native UI access here.
-            if (String.IsNullOrWhiteSpace(message) || _closing) return;
-            PendingLog entry = CreatePendingLog(time, source, message, level);
-            lock (_pendingLogGate)
-            {
-                if (_closing || _disposedUiResources != 0) return;
-                _pendingLogs.Enqueue(entry);
-                _pendingLogCharacters += entry.Characters;
-                while (_pendingLogs.Count > MaximumPendingLogEntries || _pendingLogCharacters > MaximumPendingLogCharacters)
-                {
-                    _pendingLogCharacters -= _pendingLogs.Dequeue().Characters;
-                    if (_droppedPendingLogCount < Int32.MaxValue) _droppedPendingLogCount++;
-                    if (_pendingDroppedToReport < Int32.MaxValue) _pendingDroppedToReport++;
-                }
-            }
-        }
+        { _logView.Append(time, source, message, level); }
 
-        private static PendingLog CreatePendingLog(DateTime time, string source, string message, string level)
-        {
-            string sourceName = String.IsNullOrWhiteSpace(source) ? "日志" : source;
-            if (sourceName.Length > 40) sourceName = sourceName.Substring(0, 40);
-            sourceName = sourceName.Replace('\r', ' ').Replace('\n', ' ');
-            string timePrefix = time.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture) + "  ";
-            string sourcePrefix = "[" + sourceName + "]  ";
-            string body = LimitConsoleMessage(message, MaximumConsoleEntryCharacters - timePrefix.Length - sourcePrefix.Length - 1);
-            string rendered = timePrefix + sourcePrefix + body + "\n";
-            string normalized = level ?? String.Empty;
-            if (normalized.Length > 64) normalized = normalized.Substring(0, 64);
-            normalized = normalized.ToLowerInvariant();
-            int color = normalized.Contains("error") || normalized.Contains("fatal") ? 4 : normalized.Contains("warn") ? 5 : normalized.Contains("success") ? 6 : 3;
-            return new PendingLog { TimePrefix = timePrefix, SourcePrefix = sourcePrefix, Body = body,
-                Characters = rendered.Length, LineLengths = GetConsoleLineLengths(rendered), ColorIndex = color };
-        }
-
-        // UI-thread timer entry point. Hidden controls do no RichEdit rendering work.
-        internal void FlushPendingLogs()
-        {
-            FlushPendingLogsCore(false);
-        }
-
-        // An isolated harness can measure one actual batch without depending on window visibility.
-        internal void FlushPendingLogsForTest()
-        {
-            FlushPendingLogsCore(true);
-        }
-
-        private void FlushPendingLogsCore(bool force)
-        {
-            if (_closing || IsDisposed || _flushingLogs) return;
-            if (!force && (!Visible || WindowState == FormWindowState.Minimized || !_logsVisible || !_console.Visible)) return;
-            if (InvokeRequired) throw new InvalidOperationException("Log flushing must run on the UI thread.");
-            List<PendingLog> batch = new List<PendingLog>(MaximumFlushEntries);
-            int batchCharacters = 0, batchLines = 0;
-            lock (_pendingLogGate)
-            {
-                if (_pendingDroppedToReport > 0)
-                {
-                    PendingLog notice = CreatePendingLog(DateTime.Now, "显示", "刷新较快，已略过 " + _pendingDroppedToReport.ToString(CultureInfo.InvariantCulture) + " 条较早消息，仅显示最近内容。", "Warning");
-                    batch.Add(notice); batchCharacters = notice.Characters; batchLines = notice.LineLengths.Count;
-                    _pendingDroppedToReport = 0;
-                }
-                while (_pendingLogs.Count > 0 && batch.Count < MaximumFlushEntries)
-                {
-                    PendingLog next = _pendingLogs.Peek();
-                    if (batchCharacters + next.Characters > MaximumFlushCharacters || batchLines + next.LineLengths.Count + 1 > MaximumConsoleLines) break;
-                    _pendingLogs.Dequeue(); _pendingLogCharacters -= next.Characters;
-                    batch.Add(next); batchCharacters += next.Characters; batchLines += next.LineLengths.Count;
-                }
-            }
-            if (batch.Count == 0) return;
-            _flushingLogs = true;
-            try { RenderLogBatch(batch, batchCharacters, batchLines); }
-            finally { _flushingLogs = false; }
-        }
-
-        private void RenderLogBatch(List<PendingLog> batch, int batchCharacters, int batchLines)
-        {
-            if (_consoleCharacterCount != _console.TextLength) RebuildConsoleAccounting();
-            int selectionStart = _console.SelectionStart;
-            int selectionLength = _console.SelectionLength;
-            bool autoScroll = _autoScroll.Checked;
-            NativePoint oldScroll = new NativePoint();
-            int anchorCharacter = 0;
-            Point anchorPosition = Point.Empty;
-            if (!autoScroll)
-            {
-                SendPointMessage(_console.Handle, 0x04DD, IntPtr.Zero, ref oldScroll); // EM_GETSCROLLPOS
-                anchorCharacter = _console.GetCharIndexFromPosition(new Point(1, 1));
-                anchorPosition = _console.GetPositionFromCharIndex(anchorCharacter);
-            }
-            int removedCharacters = 0;
-            int remainingCharacters = _consoleCharacterCount;
-            while (_consoleLineLengths.Count > 0 &&
-                (remainingCharacters + batchCharacters > MaximumConsoleCharacters ||
-                 _consoleLineLengths.Count + batchLines + 1 > MaximumConsoleLines))
-            {
-                int oldLineLength = _consoleLineLengths.Dequeue();
-                remainingCharacters -= oldLineLength;
-                removedCharacters += oldLineLength;
-            }
-            bool wasReadOnly = _console.ReadOnly;
-            bool redrawSuppressed = _console.Visible && _console.IsHandleCreated;
-            if (redrawSuppressed) SendWindowMessage(_console.Handle, 0x000B, IntPtr.Zero, IntPtr.Zero); // WM_SETREDRAW
-            try
-            {
-                if (removedCharacters > 0)
-                {
-                    // WM_CLEAR requires a writable control. Always restore its read-only state.
-                    _console.ReadOnly = false;
-                    _console.Select(0, removedCharacters);
-                    _console.SelectedText = String.Empty;
-                    _console.ReadOnly = wasReadOnly;
-                    int selectionEnd = Math.Max(0, selectionStart + selectionLength - removedCharacters);
-                    selectionStart = Math.Max(0, selectionStart - removedCharacters);
-                    selectionLength = Math.Max(0, selectionEnd - selectionStart);
-                }
-                _console.Select(_console.TextLength, 0);
-                _console.SelectedRtf = BuildBatchRtf(batch);
-                foreach (PendingLog entry in batch)
-                    foreach (int length in entry.LineLengths) _consoleLineLengths.Enqueue(length);
-                _consoleCharacterCount = _console.TextLength;
-                _consoleLineCount = _consoleLineLengths.Count == 0 ? 0 : _consoleLineLengths.Count + 1;
-                if (autoScroll)
-                {
-                    _console.Select(_console.TextLength, 0);
-                    _console.ScrollToCaret();
-                }
-                else
-                {
-                    selectionStart = Math.Min(selectionStart, _console.TextLength);
-                    _console.Select(selectionStart, Math.Min(selectionLength, _console.TextLength - selectionStart));
-                    NativePoint restore = oldScroll;
-                    if (removedCharacters > 0)
-                    {
-                        if (anchorCharacter < removedCharacters) restore.Y = 0;
-                        else
-                        {
-                            NativePoint current = new NativePoint();
-                            SendPointMessage(_console.Handle, 0x04DD, IntPtr.Zero, ref current);
-                            Point nextAnchor = _console.GetPositionFromCharIndex(Math.Min(_console.TextLength, anchorCharacter - removedCharacters));
-                            restore.Y = Math.Max(0, current.Y + nextAnchor.Y - anchorPosition.Y);
-                        }
-                    }
-                    SendPointMessage(_console.Handle, 0x04DE, IntPtr.Zero, ref restore); // EM_SETSCROLLPOS
-                }
-            }
-            finally
-            {
-                _console.ReadOnly = wasReadOnly;
-                _console.ClearUndo();
-                if (redrawSuppressed)
-                {
-                    SendWindowMessage(_console.Handle, 0x000B, new IntPtr(1), IntPtr.Zero);
-                    _console.Invalidate();
-                }
-            }
-        }
-
-        private static string BuildBatchRtf(List<PendingLog> batch)
-        {
-            StringBuilder rtf = new StringBuilder(16384);
-            rtf.Append(@"{\rtf1\ansi\deff0\uc1{\fonttbl{\f0\fmodern Consolas;}}{\colortbl;\red146\green166\blue186;\red113\green161\blue255;\red185\green205\blue221;\red255\green133\blue135;\red255\green200\blue103;\red48\green216\blue192;}\f0\fs18 ");
-            foreach (PendingLog entry in batch)
-            {
-                rtf.Append(@"\cf1 "); AppendRtfText(rtf, entry.TimePrefix);
-                rtf.Append(@"\cf2 "); AppendRtfText(rtf, entry.SourcePrefix);
-                rtf.Append(@"\cf").Append(entry.ColorIndex).Append(' '); AppendRtfText(rtf, entry.Body);
-                rtf.Append(@"\par ");
-            }
-            return rtf.Append('}').ToString();
-        }
-
-        private static void AppendRtfText(StringBuilder rtf, string text)
-        {
-            foreach (char character in text)
-            {
-                if (character == '\\' || character == '{' || character == '}') rtf.Append('\\').Append(character);
-                else if (character == '\n') rtf.Append(@"\par ");
-                else if (character == '\t') rtf.Append(@"\tab ");
-                else if (character < 32) rtf.Append(' ');
-                else if (character > 126) rtf.Append(@"\u").Append(unchecked((short)character)).Append('?');
-                else rtf.Append(character);
-            }
-        }
-
-        private static string LimitConsoleMessage(string message, int maximumLength)
-        {
-            bool truncated = message.Length > maximumLength;
-            string text = (truncated ? message.Substring(0, maximumLength) : message).Replace("\r\n", "\n").Replace('\r', '\n');
-            int breaks = 0;
-            for (int i = 0; i < text.Length; i++)
-            {
-                if (text[i] == '\n' && ++breaks >= MaximumConsoleLines - 1)
-                {
-                    text = text.Substring(0, i);
-                    truncated = true;
-                    break;
-                }
-            }
-            if (!truncated) return text;
-            const string marker = " … [已截断]";
-            int keep = Math.Min(text.Length, Math.Max(0, maximumLength - marker.Length));
-            if (keep > 0 && Char.IsHighSurrogate(text[keep - 1])) keep--;
-            return text.Substring(0, keep) + marker;
-        }
-
-        private static List<int> GetConsoleLineLengths(string text)
-        {
-            List<int> lengths = new List<int>();
-            int lineStart = 0;
-            for (int i = 0; i < text.Length; i++)
-            {
-                if (text[i] == '\n') { lengths.Add(i - lineStart + 1); lineStart = i + 1; }
-            }
-            if (lineStart < text.Length) lengths.Add(text.Length - lineStart);
-            return lengths;
-        }
-
-        private void RebuildConsoleAccounting()
-        {
-            _consoleLineLengths.Clear();
-            foreach (int length in GetConsoleLineLengths(_console.Text)) _consoleLineLengths.Enqueue(length);
-            _consoleCharacterCount = _console.TextLength;
-            _consoleLineCount = _consoleLineLengths.Count == 0 ? 0 : _consoleLineLengths.Count + 1;
-        }
+        internal void FlushPendingLogs() { _logView.Flush(); }
+        internal void FlushPendingLogsForTest() { _logView.FlushForTest(); }
 
         private void ClearConsoleDisplay()
         {
-            lock (_pendingLogGate)
-            {
-                _pendingLogs.Clear();
-                _pendingLogCharacters = 0;
-                _droppedPendingLogCount = 0;
-                _pendingDroppedToReport = 0;
-            }
-            bool wasReadOnly = _console.ReadOnly;
-            try { _console.ReadOnly = false; _console.Clear(); _console.ClearUndo(); }
-            finally { _console.ReadOnly = wasReadOnly; }
-            _consoleLineLengths.Clear();
-            _consoleLineCount = 0;
-            _consoleCharacterCount = 0;
-            _seenLogs.Clear();
-            _seenLogOrder.Clear();
+            _logView.Clear();
             if (_snapshot != null && _snapshot.Logs != null) _snapshot.Logs.Clear();
         }
 
@@ -1178,12 +899,7 @@ namespace WirelessInternet
             _operations.BeginClosing();
             if (_timer != null) { _timer.Stop(); _timer.Dispose(); }
             if (_logTimer != null) { _logTimer.Stop(); _logTimer.Dispose(); }
-            lock (_pendingLogGate)
-            {
-                _pendingLogs.Clear();
-                _pendingLogCharacters = 0;
-                _pendingDroppedToReport = 0;
-            }
+            if (_logView != null) _logView.Dispose();
             if (_trayIcon != null) { _trayIcon.Visible = false; _trayIcon.Dispose(); }
             if (_trayMenu != null) _trayMenu.Dispose();
             Task pending = _pollTask;
@@ -1231,7 +947,7 @@ namespace WirelessInternet
                 "  \"ConsoleTextLength\": " + _console.TextLength.ToString(CultureInfo.InvariantCulture) + ",\n" +
                 "  \"ConsoleCharacterCount\": " + _consoleCharacterCount.ToString(CultureInfo.InvariantCulture) + ",\n" +
                 "  \"ConsoleLineCount\": " + _consoleLineCount.ToString(CultureInfo.InvariantCulture) + ",\n" +
-                "  \"ConsoleDedupCount\": " + _seenLogs.Count.ToString(CultureInfo.InvariantCulture) + ",\n" +
+                "  \"ConsoleDedupCount\": " + _logView.DedupCount.ToString(CultureInfo.InvariantCulture) + ",\n" +
                 "  \"PendingLogCount\": " + PendingLogCount.ToString(CultureInfo.InvariantCulture) + ",\n" +
                 "  \"PendingLogCharacters\": " + PendingLogCharacters.ToString(CultureInfo.InvariantCulture) + ",\n" +
                 "  \"DroppedPendingLogCount\": " + DroppedPendingLogCount.ToString(CultureInfo.InvariantCulture) + ",\n" +
@@ -1295,9 +1011,7 @@ namespace WirelessInternet
         }
 
         private static Label MakeLabel(string text, float size, Color color, FontStyle style)
-        {
-            return new Label { Text = text, ForeColor = color, BackColor = Color.Transparent, Font = new Font("Microsoft YaHei UI", size, style), AutoSize = false };
-        }
+        { return UiVisualStyle.MakeLabel(text, size, color, style); }
 
         private static Button MakeButton(string text, bool primary)
         {
@@ -1371,188 +1085,5 @@ namespace WirelessInternet
             return grid;
         }
 
-        private class RoundedPanel : Panel
-        {
-            public RoundedPanel() { DoubleBuffered = true; BackColor = PanelColor; }
-            protected override void OnPaintBackground(PaintEventArgs e)
-            {
-                e.Graphics.Clear(BackgroundColor);
-                if (Width < 2 || Height < 2) return;
-                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-                float scale = UiDpi.For(this);
-                using (GraphicsPath path = RoundRect(new RectangleF(.5F * scale, .5F * scale, Width - scale, Height - scale), 10F * scale))
-                using (SolidBrush fill = new SolidBrush(PanelColor))
-                using (Pen border = new Pen(BorderColor, scale))
-                { e.Graphics.FillPath(fill, path); e.Graphics.DrawPath(border, path); }
-            }
-        }
-
-        private static GraphicsPath RoundRect(RectangleF rectangle, float radius)
-        {
-            float diameter = radius * 2;
-            GraphicsPath result = new GraphicsPath();
-            result.AddArc(rectangle.X, rectangle.Y, diameter, diameter, 180, 90);
-            result.AddArc(rectangle.Right - diameter, rectangle.Y, diameter, diameter, 270, 90);
-            result.AddArc(rectangle.Right - diameter, rectangle.Bottom - diameter, diameter, diameter, 0, 90);
-            result.AddArc(rectangle.X, rectangle.Bottom - diameter, diameter, diameter, 90, 90);
-            result.CloseFigure();
-            return result;
-        }
-
-        private sealed class MetricCard : RoundedPanel
-        {
-            private readonly Label _value;
-            private readonly Label _caption;
-            public MetricCard(string title, string value, string caption, Color color)
-            {
-                Padding = new Padding(16, 11, 12, 8);
-                Label heading = MakeLabel(title, 8.5F, MutedColor, FontStyle.Regular);
-                heading.Dock = DockStyle.Top;
-                heading.Height = 22;
-                _caption = MakeLabel(caption, 8F, MutedColor, FontStyle.Regular);
-                _caption.Dock = DockStyle.Bottom;
-                _caption.Height = 21;
-                _caption.AutoEllipsis = true;
-                _value = MakeLabel(value, 22F, color, FontStyle.Bold);
-                _value.Dock = DockStyle.Fill;
-                _value.TextAlign = ContentAlignment.MiddleLeft;
-                Controls.Add(_value);
-                Controls.Add(_caption);
-                Controls.Add(heading);
-            }
-            public void SetValue(string value, string caption) { _value.Text = value; _caption.Text = caption; }
-        }
-
-        private sealed class StatusLight : Control
-        {
-            private Color _color = MutedColor;
-            public Color LightColor { get { return _color; } set { _color = value; Invalidate(); } }
-            public StatusLight() { SetStyle(ControlStyles.SupportsTransparentBackColor | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true); BackColor = Color.Transparent; }
-            protected override void OnPaint(PaintEventArgs e)
-            {
-                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-                float inset = UiDpi.For(this);
-                using (SolidBrush brush = new SolidBrush(_color)) e.Graphics.FillEllipse(brush, inset, inset, Width - 2 * inset, Height - 2 * inset);
-            }
-        }
-
-        private sealed class LogoMark : Control
-        {
-            public LogoMark() { DoubleBuffered = true; SetStyle(ControlStyles.ResizeRedraw, true); }
-            protected override void OnPaint(PaintEventArgs e)
-            {
-                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-                e.Graphics.ScaleTransform(Width / 43F, Height / 43F);
-                using (GraphicsPath shape = RoundRect(new RectangleF(0, 0, 42, 42), 10))
-                using (SolidBrush fill = new SolidBrush(Color.FromArgb(22, 66, 65))) e.Graphics.FillPath(fill, shape);
-                using (SolidBrush bars = new SolidBrush(AccentColor))
-                {
-                    e.Graphics.FillRectangle(bars, 10, 25, 4, 8);
-                    e.Graphics.FillRectangle(bars, 19, 18, 4, 15);
-                    e.Graphics.FillRectangle(bars, 28, 10, 4, 23);
-                }
-            }
-        }
-
-        private sealed class SpeedChart : Control
-        {
-            private readonly List<double> _download = new List<double>();
-            private readonly List<double> _upload = new List<double>();
-            public SpeedChart() { DoubleBuffered = true; BackColor = PanelColor; SetStyle(ControlStyles.ResizeRedraw, true); }
-            public void AddSample(double download, double upload)
-            {
-                _download.Add(SafeValue(download));
-                _upload.Add(SafeValue(upload));
-                while (_download.Count > 60) { _download.RemoveAt(0); _upload.RemoveAt(0); }
-                Invalidate();
-            }
-            public void ClearSamples() { _download.Clear(); _upload.Clear(); Invalidate(); }
-            private static double SafeValue(double value) { return Double.IsNaN(value) || Double.IsInfinity(value) || value < 0 ? Double.NaN : value; }
-            protected override void OnPaint(PaintEventArgs e)
-            {
-                base.OnPaint(e);
-                float scale = UiDpi.For(this);
-                if (Width < 120 * scale || Height < 80 * scale) return;
-                Graphics graphics = e.Graphics;
-                graphics.SmoothingMode = SmoothingMode.AntiAlias;
-                using (Font heading = new Font("Microsoft YaHei UI", 12F * scale, FontStyle.Bold, GraphicsUnit.Pixel))
-                using (Font small = new Font("Microsoft YaHei UI", (32F / 3F) * scale, FontStyle.Regular, GraphicsUnit.Pixel))
-                using (SolidBrush text = new SolidBrush(TextColor))
-                using (SolidBrush muted = new SolidBrush(MutedColor))
-                {
-                    graphics.DrawString("实时网速", heading, text, 0, 0);
-                    graphics.DrawString("最近 60 次采样", small, muted, 85 * scale, 2 * scale);
-                    DrawLegend(graphics, "下载", AccentColor, Width - 151 * scale, 8 * scale, small, scale);
-                    DrawLegend(graphics, "上传", UploadColor, Width - 75 * scale, 8 * scale, small, scale);
-                    double maximum = 1024;
-                    for (int i = 0; i < _download.Count; i++)
-                    {
-                        if (!Double.IsNaN(_download[i])) maximum = Math.Max(maximum, _download[i]);
-                        if (!Double.IsNaN(_upload[i])) maximum = Math.Max(maximum, _upload[i]);
-                    }
-                    maximum *= 1.15;
-                    float axisWidth = 77 * scale;
-                    for (int row = 0; row <= 2; row++)
-                        axisWidth = Math.Max(axisWidth, graphics.MeasureString(FormatRate(maximum * (1 - row / 2.0)), small).Width + 14 * scale);
-                    RectangleF plot = new RectangleF(scale, 31 * scale, Width - axisWidth, Height - 51 * scale);
-                    using (Pen grid = new Pen(Color.FromArgb(36, 54, 71), scale))
-                    {
-                        for (int row = 0; row <= 2; row++)
-                        {
-                            float y = plot.Top + plot.Height * row / 2;
-                            graphics.DrawLine(grid, plot.Left, y, plot.Right, y);
-                            graphics.DrawString(FormatRate(maximum * (1 - row / 2.0)), small, muted, plot.Right + 9 * scale, y - 8 * scale);
-                        }
-                    }
-                    DrawSeries(graphics, plot, _download, maximum, AccentColor, true, scale);
-                    DrawSeries(graphics, plot, _upload, maximum, UploadColor, false, scale);
-                    graphics.DrawString("较早", small, muted, plot.Left, plot.Bottom + 4 * scale);
-                    SizeF now = graphics.MeasureString("现在", small);
-                    graphics.DrawString("现在", small, muted, plot.Right - now.Width, plot.Bottom + 4 * scale);
-                }
-            }
-            private static void DrawLegend(Graphics graphics, string label, Color color, float x, float y, Font font, float scale)
-            {
-                using (Pen pen = new Pen(color, 2 * scale)) graphics.DrawLine(pen, x, y + 2 * scale, x + 17 * scale, y + 2 * scale);
-                using (SolidBrush brush = new SolidBrush(MutedColor)) graphics.DrawString(label, font, brush, x + 23 * scale, y - 7 * scale);
-            }
-            private static void DrawSeries(Graphics graphics, RectangleF plot, List<double> values, double maximum, Color color, bool fill, float scale)
-            {
-                if (values.Count == 0) return;
-                List<PointF> points = new List<PointF>();
-                int offset = 60 - values.Count;
-                for (int i = 0; i < values.Count; i++)
-                {
-                    if (Double.IsNaN(values[i]))
-                    {
-                        DrawSegment(graphics, plot, points.ToArray(), color, fill, scale);
-                        points.Clear();
-                    }
-                    else points.Add(new PointF(plot.Left + plot.Width * (offset + i) / 59, plot.Bottom - (float)(plot.Height * values[i] / maximum)));
-                }
-                DrawSegment(graphics, plot, points.ToArray(), color, fill, scale);
-            }
-            private static void DrawSegment(Graphics graphics, RectangleF plot, PointF[] points, Color color, bool fill, float scale)
-            {
-                if (points.Length == 0) return;
-                if (points.Length == 1)
-                {
-                    using (SolidBrush dot = new SolidBrush(color)) graphics.FillEllipse(dot, points[0].X - 2 * scale, points[0].Y - 2 * scale, 4 * scale, 4 * scale);
-                    return;
-                }
-                if (fill)
-                {
-                    using (GraphicsPath area = new GraphicsPath())
-                    {
-                        area.AddLine(points[0].X, plot.Bottom, points[0].X, points[0].Y);
-                        area.AddLines(points);
-                        area.AddLine(points[points.Length - 1].X, points[points.Length - 1].Y, points[points.Length - 1].X, plot.Bottom);
-                        area.CloseFigure();
-                        using (LinearGradientBrush brush = new LinearGradientBrush(plot, Color.FromArgb(49, color), Color.FromArgb(3, color), LinearGradientMode.Vertical)) graphics.FillPath(brush, area);
-                    }
-                }
-                using (Pen line = new Pen(color, 2F * scale)) { line.LineJoin = LineJoin.Round; graphics.DrawLines(line, points); }
-            }
-        }
     }
 }

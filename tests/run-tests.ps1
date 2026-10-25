@@ -18,7 +18,8 @@ if (-not (Test-Path -LiteralPath $source -PathType Container)) {
 $testRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 $requiredSources = @('NativeNetwork.cs', 'RuntimeCommon.cs', 'WatchdogController.cs', 'PhoneGuardSource.cs',
     'ProcessExecution.cs', 'SetupBackend.cs', 'Backend.cs', 'MemoryLog.cs', 'SessionStatus.cs', 'UiOperationCoordinator.cs',
-    'RuntimeSessionStore.cs', 'OwnedProcessManager.cs', 'AndroidProtocol.cs', 'AndroidDeviceClient.cs', 'ConnectionController.cs', 'ConnectionOperation.cs')
+    'RuntimeSessionStore.cs', 'OwnedProcessManager.cs', 'AndroidProtocol.cs', 'AndroidDeviceClient.cs', 'ConnectionController.cs', 'ConnectionOperation.cs',
+    'MonitoringModels.cs', 'SystemSessionObservationSource.cs', 'PhoneTrafficTracker.cs', 'MonitorSnapshotAssembler.cs')
 foreach ($name in $requiredSources) {
     if (-not (Test-Path -LiteralPath (Join-Path $source $name) -PathType Leaf)) {
         throw ('A required source file is missing: ' + $name)
@@ -82,6 +83,7 @@ function Run-Check([string]$Name, [string]$Executable, [string[]]$Arguments, [st
 
 $coreReferences = @('System.Core.dll', 'System.Management.dll', 'System.Web.Extensions.dll')
 $coreSources = @('RuntimeCommon.cs', 'NativeNetwork.cs', 'PhoneGuardSource.cs', 'ProcessExecution.cs', 'RuntimeSessionStore.cs', 'OwnedProcessManager.cs', 'AndroidProtocol.cs')
+$monitorSources = @('Backend.cs', 'MonitoringModels.cs', 'SystemSessionObservationSource.cs', 'PhoneTrafficTracker.cs', 'MonitorSnapshotAssembler.cs', 'MemoryLog.cs', 'ProcessExecution.cs', 'SessionStatus.cs')
 Push-Location $runRoot
 try {
     $network = Compile-Check 'NativeNetworkTunRegression' @('NativeNetwork.cs') @('System.Core.dll', 'System.Management.dll') 'NativeNetworkTunRegression.cs'
@@ -94,11 +96,14 @@ try {
     $process = Compile-Check 'ProcessExecutionChecks' ($coreSources + @('SetupBackend.cs')) $coreReferences 'ProcessExecutionChecks.cs'
     Run-Check 'Process' $process @($fixture) '^PASS (\d+) shared-execution checks' 54
 
-    $backend = Compile-Check 'BackendStatusChecks' @('Backend.cs', 'MemoryLog.cs', 'ProcessExecution.cs', 'SessionStatus.cs') @('System.Core.dll', 'System.Web.Extensions.dll') 'BackendStatusChecks.cs'
+    $backend = Compile-Check 'BackendStatusChecks' $monitorSources @('System.Core.dll', 'System.Web.Extensions.dll') 'BackendStatusChecks.cs'
     Run-Check 'Backend' $backend @() '^TOTAL (\d+) PASS' 29
 
-    $sampling = Compile-Check 'PhoneSamplingChecks' @('Backend.cs', 'MemoryLog.cs', 'ProcessExecution.cs', 'SessionStatus.cs') @('System.Core.dll', 'System.Web.Extensions.dll') 'PhoneSamplingChecks.cs'
+    $sampling = Compile-Check 'PhoneSamplingChecks' $monitorSources @('System.Core.dll', 'System.Web.Extensions.dll') 'PhoneSamplingChecks.cs'
     Run-Check 'Sampling' $sampling @($runRoot) '^PASS (\d+) sampling checks' 26
+
+    $composition = Compile-Check 'MonitoringCompositionChecks' $monitorSources @('System.Core.dll', 'System.Web.Extensions.dll') 'MonitoringCompositionChecks.cs'
+    Run-Check 'MonitoringComposition' $composition @((Join-Path $runRoot 'monitoring-composition-results.json')) '^PASS (\d+) monitoring composition checks' 272
 
     $coordinator = Compile-Check 'CoordinatorChecks' @('UiOperationCoordinator.cs') @('System.Core.dll', 'System.Web.Extensions.dll') 'CoordinatorChecks.cs'
     Run-Check 'Coordinator' $coordinator @((Join-Path $runRoot 'coordinator-results.json')) '^PASS (\d+) coordinator checks' 39
@@ -117,5 +122,5 @@ try {
 }
 finally { Pop-Location }
 
-Write-Host ('PASS all 10 offline suites: ' + (($summary | Measure-Object -Property Assertions -Sum).Sum) + ' assertions.')
+Write-Host ('PASS all 11 offline suites: ' + (($summary | Measure-Object -Property Assertions -Sum).Sum) + ' assertions.')
 Write-Host ('Generated files are isolated under: ' + $runRoot)

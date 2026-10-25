@@ -1,8 +1,10 @@
 {
-  "Version": "1.6.0",
+  "Version": "1.7.0",
   "SourceFiles": [
     "AppForm.cs", "Backend.cs", "ConnectionController.cs", "MemoryLog.cs",
     "AndroidProtocol.cs", "AndroidDeviceClient.cs", "RuntimeSessionStore.cs", "OwnedProcessManager.cs", "ConnectionOperation.cs",
+    "MonitoringModels.cs", "SystemSessionObservationSource.cs", "PhoneTrafficTracker.cs", "MonitorSnapshotAssembler.cs",
+    "ConsoleLogView.cs", "DashboardControls.cs", "UiVisualStyle.cs",
     "NativeNetwork.cs", "PhoneGuardSource.cs", "ProcessExecution.cs", "Program.cs",
     "RelayLogHost.cs", "RuntimeCommon.cs", "SessionStatus.cs", "SetupBackend.cs",
     "SetupForm.cs", "UiDpi.cs", "UiOperationCoordinator.cs", "WatchdogController.cs", "WorkerHost.cs",

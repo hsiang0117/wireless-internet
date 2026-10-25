@@ -4,7 +4,7 @@
 
 电脑通过有线网络上网，Wi-Fi 连接**手机开启的热点**；程序利用无线 ADB 和 gnirehtet，把手机应用的网络请求送到电脑，再由电脑访问互联网。电脑的 Windows「移动热点」保持关闭，无需先插 USB。
 
-当前版本：**1.6.0**。原创代码和文档采用 [MIT License](LICENSE)。
+当前版本：**1.7.0**。原创代码和文档采用 [MIT License](LICENSE)。
 
 ## 原理说明
 
@@ -191,6 +191,8 @@ flowchart LR
 1.6.0 整理连接生命周期：`ConnectionController` 按阶段协调开始、断开和失败处理，控制台显示阶段进度，内部阶段结果记录失败位置和结果消息。手机命令移入 `AndroidDeviceClient`，通用回复解析由 `AndroidProtocol` 提供；会话持久化移入 `RuntimeSessionStore`，进程身份核验和生命周期操作移入 `OwnedProcessManager`。`RuntimeContext` 保留原调用入口，逐步转发到这些职责明确的组件。
 
 本轮保留原有操作锁、执行顺序和状态提交／清理边界。失败清理仍须核对会话 token 和进程 PID、启动时间及路径；已经提交的会话按原恢复流程保留必要资源，供正常断开或重试处理。默认 30 秒失联保护、约 5 秒保护心跳以及 1.5.1 的前台三秒统计／后台暂停行为保持不变。
+
+1.7.0 整理桌面监控与显示：`SystemSessionObservationSource` 负责只读系统观察，`PhoneTrafficTracker` 管理统计与采样缓存，`MonitorSnapshotAssembler` 组合快照；`Backend` 保留原调用入口。`ConsoleLogView` 独立处理有界日志批次、去重及阅读位置，自绘控件与视觉值由 `DashboardControls`／`UiVisualStyle` 提供。原有布局、DPI、日志限额、三秒采样和后台暂停行为保持不变；操作状态仍由同一个 `UiOperationCoordinator` 管理。
 
 源码提供三个独立的 MSBuild 项目和 solution，共享源文件按组件编译，运行时不新增共享 DLL。编译说明见 [source/BUILD.md](source/BUILD.md)，离线测试方法见 [tests/README.md](tests/README.md)。测试覆盖连接阶段与失败清理、会话存储、进程身份、手机协议、网卡、失联保护、命令执行、统计状态和操作协调；离线回归不调用真实 ADB，也不修改网络设置。
 
