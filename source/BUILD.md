@@ -1,6 +1,6 @@
 ﻿# 源码与构建
 
-本文对应无线网络共享 1.8.0。使用流程见仓库根目录 [README](../README.md)，离线测试见 [tests/README.md](../tests/README.md)。
+本文对应无线网络共享 1.9.0。使用流程见仓库根目录 [README](../README.md)，离线测试见 [tests/README.md](../tests/README.md)。
 
 ## 三个独立项目
 
@@ -13,6 +13,8 @@
 | `RelayLogHost.csproj` | `RelayLogHost`、`MemoryLog` | `RelayLogHost.exe`，WinExe |
 
 程序集引用和源清单只在项目文件中维护。共享源码分别编入需要它的组件，保持桌面、连接/保护 worker 和日志 host 的现有进程边界，不增加运行时共享 DLL。
+
+GUI 和 worker 同时编入 `SharedDataModels.cs` 与 `ConfigurationDocument.cs`。它们不依赖 WMI、设备命令或文件 I/O；网络发现仍由 `NativeNetwork` 执行，持久化和校验仍在各调用方。
 
 每个项目使用独立的 `obj/<项目>/<配置>/`。默认输出统一在源码目录的 `bin/`；可通过 `OutDir` 指定隔离输出目录。三个项目都将本地 `App.config` 复制为对应的 `.exe.config`。
 
@@ -57,6 +59,14 @@ Write-Output $out
 `WorkerActionClient` 独立读取并核对帧版本、操作 ID、动作与格式，收到最终结果后还须核对真实进程退出码。`Backend.RunActionWithResult` 返回 `WorkerActionResult`；原 `RunAction` 入口保留，但缺失、损坏或不匹配的结果不会映射为成功。界面阶段回调异步派发，旧操作的迟到阶段不能覆盖最终结果或下一次操作。失败阶段与“结果未确认”短暂保留在状态区，并写入内存控制台。
 
 结果通道在动作开始前无法连接时不执行连接／断开副作用。动作开始后，界面退出或不读取管道不会取消部分完成的清理，worker 继续执行原有安全顺序；通道写入与退出排空等待有上限，连接操作本身沿用原有等待规则，不增加外层强杀超时。此通道不改变会话文件格式、保护心跳或操作锁。
+
+## 共享配置与会话数据
+
+`SharedDataModels` 集中定义纯网络数据 `NetworkLink` 和共有会话字段 `SessionRecord`。worker 的 `RuntimeState` 继承这些字段，仅补充控制和中继宿主字段及不参与 JSON 序列化的原始字典。网络成本继续使用 `long`／`long?`；worker 新会话的保护时间仍默认为 30，GUI 缺失该字段时仍保留原来的 0。
+
+GUI 的观察字段通过属性标记，解码时只投影原来的 14 个成员，再执行原有 token、身份和端点形状校验。这样新增的网络字段不会让 GUI 开始拒绝原本忽略的附加内容。worker 继续完整反序列化并调用原严格校验和虚方法回调，不因共用数据类型而放宽控制条件。
+
+`ConfigurationDocument` 包装原始配置字典，集中六个常用字段、JSON 编解码与基础转换。读取属性不会插入缺省键；未识别的嵌套字段和值保持原样。worker 使用严格整数转换和超时范围校验，绑定界面使用原有索引回退规则；`NativeNetwork` 的大小写、重复键及网卡选择规则独立保留。只有向导确认保存时才明确更新绑定字段、保护时间和旧 alias；文件原子替换、大小限制、异常消息与互斥协议留在原位置。
 
 ## 显示与运行配置
 

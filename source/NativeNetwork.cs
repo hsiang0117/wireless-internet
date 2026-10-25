@@ -37,16 +37,6 @@ namespace WirelessInternet
         public byte Store = 1;
     }
 
-    // RuntimeState may inherit this class; all persisted names match previous session records.
-    public class NetworkLink
-    {
-        public int WifiInterfaceIndex, EthernetInterfaceIndex;
-        public string WifiInterfaceGuid, EthernetInterfaceGuid, WifiInterfaceAlias, EthernetInterfaceAlias;
-        public string PhoneGateway, WirelessSerial;
-        public long WifiRouteCost;
-        public long? EthernetRouteCost;
-    }
-
     public sealed class NetworkSnapshot
     {
         public List<NetworkAdapterData> Adapters = new List<NetworkAdapterData>();

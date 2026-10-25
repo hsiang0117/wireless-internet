@@ -6,11 +6,11 @@ param(
 $run = Initialize-TestRun $SourceDirectory 'f' $KeepArtifacts.IsPresent
 $succeeded = $false
 $coreReferences = @('System.Core.dll', 'System.Management.dll', 'System.Web.Extensions.dll')
-$coreSources = @('RuntimeCommon.cs', 'NativeNetwork.cs', 'PhoneGuardSource.cs', 'ProcessExecution.cs', 'RuntimeSessionStore.cs', 'OwnedProcessManager.cs', 'AndroidProtocol.cs', 'ActionProtocol.cs')
-$monitorSources = @('Backend.cs', 'MonitoringModels.cs', 'SystemSessionObservationSource.cs', 'PhoneTrafficTracker.cs', 'MonitorSnapshotAssembler.cs', 'MemoryLog.cs', 'ProcessExecution.cs', 'SessionStatus.cs', 'ActionProtocol.cs', 'WorkerActionClient.cs')
+$coreSources = @('RuntimeCommon.cs', 'SharedDataModels.cs', 'ConfigurationDocument.cs', 'NativeNetwork.cs', 'PhoneGuardSource.cs', 'ProcessExecution.cs', 'RuntimeSessionStore.cs', 'OwnedProcessManager.cs', 'AndroidProtocol.cs', 'ActionProtocol.cs')
+$monitorSources = @('Backend.cs', 'MonitoringModels.cs', 'SharedDataModels.cs', 'SystemSessionObservationSource.cs', 'PhoneTrafficTracker.cs', 'MonitorSnapshotAssembler.cs', 'MemoryLog.cs', 'ProcessExecution.cs', 'SessionStatus.cs', 'ActionProtocol.cs', 'WorkerActionClient.cs')
 Push-Location $run.RunRoot
 try {
-    $network = Compile-Check 'NativeNetworkTunRegression' @('NativeNetwork.cs') @('System.Core.dll', 'System.Management.dll') 'regression\NativeNetworkTunRegression.cs'
+    $network = Compile-Check 'NativeNetworkTunRegression' @('NativeNetwork.cs', 'SharedDataModels.cs') $coreReferences 'regression\NativeNetworkTunRegression.cs'
     Run-Check 'Network' $network @() '^PASS (\d+) offline native-network' 69
 
     $watchdog = Compile-Check 'WatchdogChecks' ($coreSources + @('WatchdogController.cs')) $coreReferences 'regression\WatchdogChecks.cs'

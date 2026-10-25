@@ -144,13 +144,13 @@ namespace WirelessInternet
                 try
                 {
                     backend.EnsureCanConfigure();
-                    Dictionary<string, object> configuration = backend.ReadConfiguration();
-                    string identity = SetupBackend.GetString(configuration, "PhoneIdentity");
+                    ConfigurationDocument configuration = backend.ReadConfigurationDocument();
+                    string identity = configuration.PhoneIdentity;
                     if (identity.Length > 100) identity = identity.Substring(0, 100) + "…";
                     _bindingLabel.Text = "当前绑定：" + (String.IsNullOrWhiteSpace(identity) ? "未绑定" : identity);
-                    _wifiIndex.Value = Math.Min(_wifiIndex.Maximum, SetupBackend.GetIndex(configuration, "WifiInterfaceIndex"));
-                    _ethernetIndex.Value = Math.Min(_ethernetIndex.Maximum, SetupBackend.GetIndex(configuration, "EthernetInterfaceIndex"));
-                    _connectAddress.Text = SetupBackend.GetString(configuration, "ConnectEndpoint");
+                    _wifiIndex.Value = Math.Min(_wifiIndex.Maximum, configuration.WifiInterfaceIndex);
+                    _ethernetIndex.Value = Math.Min(_ethernetIndex.Maximum, configuration.EthernetInterfaceIndex);
+                    _connectAddress.Text = configuration.ConnectEndpoint;
                 }
                 catch (Exception exception) { ShowStatus(exception.Message, true); }
             };

@@ -50,6 +50,8 @@
   <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="Backend.cs" />
+    <Compile Include="SharedDataModels.cs" />
+    <Compile Include="ConfigurationDocument.cs" />
     <Compile Include="ActionProtocol.cs" />
     <Compile Include="WorkerActionClient.cs" />
     <Compile Include="MonitoringModels.cs" />

@@ -61,7 +61,7 @@ namespace WirelessInternet
         }
         public static SessionRecord ReadState(string path)
         {
-            SessionRecord s = new JavaScriptSerializer().Deserialize<SessionRecord>(ReadShared(path));
+            SessionRecord s = SessionRecordJson.ReadObservation(ReadShared(path));
             if (s == null || !Regex.IsMatch(s.ProtectionSessionId ?? "", "^[0-9a-f]{32}$") ||
                 !Regex.IsMatch(s.PhoneIdentity ?? "", "^[A-Za-z0-9_-]{1,100}$") ||
                 !Regex.IsMatch(s.WirelessSerial ?? "", "^([0-9]{1,3}\\.){3}[0-9]{1,3}:[0-9]{1,5}$"))

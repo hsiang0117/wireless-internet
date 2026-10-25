@@ -21,14 +21,12 @@ namespace WirelessInternet
         public string[] Lines { get { return Regex.Split(Text, "\\r?\\n"); } set { Text = String.Join("\n", value ?? new string[0]); } }
         public bool Success { get { return ExitCode == 0; } set { ExitCode = value ? 0 : 1; } }
     }
-    public class RuntimeState : NetworkLink
+    public class RuntimeState : SessionRecord
     {
-        public string Transport = "NativeTls", PhoneIdentity, ConnectEndpoint, RelayPath, RelayStartTimeUtcTicks;
-        public string RelayLogPipe, LogMode, RelayHostStartTimeUtcTicks;
-        public string ProtectionSessionId, PhoneControlPath, WatchdogStartTimeUtcTicks, MonitorHeartbeatQpcTicks;
-        public string WatchdogPath, RuntimeEngine;
-        public int RelayProcessId, RelayHostProcessId, ProtectionTimeoutSeconds = 30, WatchdogProcessId;
+        public string Transport = "NativeTls", ConnectEndpoint, RelayHostStartTimeUtcTicks, PhoneControlPath;
+        public int RelayHostProcessId;
         [ScriptIgnore] public Dictionary<string, object> RawFields;
+        public RuntimeState() { ProtectionTimeoutSeconds = 30; }
     }
     public sealed class PhoneGuardLease : IDisposable
     {

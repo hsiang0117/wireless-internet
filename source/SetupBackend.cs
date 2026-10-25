@@ -10,7 +10,6 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Web.Script.Serialization;
 
 namespace WirelessInternet
 {
@@ -77,9 +76,9 @@ namespace WirelessInternet
             {
                 string path = Path.Combine(root, "wireless-config.json");
                 if (!File.Exists(path)) return false;
-                var data = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(path, Encoding.UTF8));
-                return data != null && GetString(data, "Transport") == "NativeTls" &&
-                    Regex.IsMatch(GetString(data, "PhoneIdentity"), "^[A-Za-z0-9_-]{1,100}$");
+                ConfigurationDocument data = ConfigurationDocument.Parse(File.ReadAllText(path, Encoding.UTF8));
+                return data != null && data.Transport == "NativeTls" &&
+                    Regex.IsMatch(data.PhoneIdentity, "^[A-Za-z0-9_-]{1,100}$");
             }
             catch { return false; }
         }
@@ -94,11 +93,14 @@ namespace WirelessInternet
         }
 
         public Dictionary<string, object> ReadConfiguration()
+        { return ReadConfigurationDocument().Fields; }
+
+        public ConfigurationDocument ReadConfigurationDocument()
         {
             try
             {
-                if (!File.Exists(configPath)) return new Dictionary<string, object>();
-                var data = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(configPath, Encoding.UTF8));
+                if (!File.Exists(configPath)) return new ConfigurationDocument();
+                ConfigurationDocument data = ConfigurationDocument.Parse(File.ReadAllText(configPath, Encoding.UTF8));
                 if (data == null) throw new IOException();
                 return data;
             }
@@ -107,14 +109,14 @@ namespace WirelessInternet
 
         public static string GetString(Dictionary<string, object> data, string key)
         {
-            object value;
-            return data.TryGetValue(key, out value) && value != null ? Convert.ToString(value, CultureInfo.InvariantCulture) : String.Empty;
+            if (data == null) throw new NullReferenceException(); // Preserve the compatibility entry's null contract.
+            return ConfigurationDocument.ReadString(data, key);
         }
 
         public static int GetIndex(Dictionary<string, object> data, string key)
         {
-            int value;
-            return Int32.TryParse(GetString(data, key), NumberStyles.Integer, CultureInfo.InvariantCulture, out value) && value >= 0 ? value : 0;
+            if (data == null) throw new NullReferenceException();
+            return ConfigurationDocument.ReadIndex(data, key);
         }
 
         public void EnsureCanConfigure()
@@ -242,16 +244,16 @@ namespace WirelessInternet
                 if (latest.Endpoint != target.Endpoint || latest.WifiInterfaceIndex != target.WifiInterfaceIndex)
                     throw new IOException("电脑的热点连接在检测期间发生变化，请保持连接后重试。");
                 EnsureNoSession();
-                Dictionary<string, object> data = ReadConfiguration();
-                data["Transport"] = "NativeTls";
-                data["PhoneIdentity"] = serial;
-                data["DisconnectTimeoutSeconds"] = 30;
-                data["ConnectEndpoint"] = target.Endpoint;
-                data["WifiInterfaceIndex"] = wifiInterfaceIndex > 0 ? wifiInterfaceIndex : target.MultipleWirelessInterfaces ? target.WifiInterfaceIndex : 0;
-                data["EthernetInterfaceIndex"] = ethernetInterfaceIndex;
+                ConfigurationDocument data = ReadConfigurationDocument();
+                data.Transport = "NativeTls";
+                data.PhoneIdentity = serial;
+                data.DisconnectTimeoutSeconds = 30;
+                data.ConnectEndpoint = target.Endpoint;
+                data.WifiInterfaceIndex = wifiInterfaceIndex > 0 ? wifiInterfaceIndex : target.MultipleWirelessInterfaces ? target.WifiInterfaceIndex : 0;
+                data.EthernetInterfaceIndex = ethernetInterfaceIndex;
                 // The wizard selects by index; discard older alias constraints after reconfiguration.
-                data.Remove("WifiInterfaceAlias");
-                data.Remove("EthernetInterfaceAlias");
+                data.Fields.Remove(ConfigurationDocument.Keys.WifiInterfaceAlias);
+                data.Fields.Remove(ConfigurationDocument.Keys.EthernetInterfaceAlias);
                 SaveAtomic(data);
                 verified = new SetupVerification { PhoneIdentity = serial, ConnectEndpoint = target.Endpoint, AndroidSdk = sdk };
                 Report(progress, "检测通过，手机配置已保存。可返回主界面点击“开始连接”。");
@@ -291,12 +293,12 @@ namespace WirelessInternet
             if (!found) throw new IOException("目标手机尚未在 ADB 设备列表中就绪，请重新确认授权与连接端口。");
         }
 
-        void SaveAtomic(Dictionary<string, object> data)
+        void SaveAtomic(ConfigurationDocument data)
         {
             string temporary = configPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
             try
             {
-                File.WriteAllText(temporary, new JavaScriptSerializer().Serialize(data), new UTF8Encoding(false));
+                File.WriteAllText(temporary, data.Serialize(), new UTF8Encoding(false));
                 if (File.Exists(configPath)) File.Replace(temporary, configPath, null);
                 else File.Move(temporary, configPath);
             }

@@ -31,13 +31,6 @@ namespace WirelessInternet
         public List<ConnectionInfo> Connections = new List<ConnectionInfo>();
         public List<LogEntry> Logs = new List<LogEntry>();
     }
-    public sealed class SessionRecord
-    {
-        public string ProtectionSessionId, PhoneIdentity, WirelessSerial, RelayStartTimeUtcTicks, RelayPath;
-        public string WatchdogStartTimeUtcTicks, MonitorHeartbeatQpcTicks, WatchdogPath, RuntimeEngine;
-        public int RelayProcessId, WatchdogProcessId, ProtectionTimeoutSeconds;
-        public string RelayLogPipe, LogMode;
-    }
     public sealed class PhoneCounters
     {
         public string Key, Interface;

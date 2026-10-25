@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -17,25 +16,18 @@ namespace WirelessInternet
         { this.root = root; this.statePath = statePath; }
 
         public static string GetString(IDictionary<string, object> data, string key)
-        {
-            object value; return data != null && data.TryGetValue(key, out value) && value != null ? Convert.ToString(value, CultureInfo.InvariantCulture) : "";
-        }
+        { return ConfigurationDocument.ReadString(data, key); }
         public static int GetInt(IDictionary<string, object> data, string key, int fallback)
-        {
-            string text = GetString(data, key); int value;
-            if (text.Length == 0) return fallback;
-            if (!Int32.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out value)) throw new IOException("配置中的 " + key + " 无效。");
-            return value;
-        }
+        { return ConfigurationDocument.ReadInt32(data, key, fallback); }
         public Dictionary<string, object> ReadConfig()
         {
-            var data = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(ReadShared(Path.Combine(root, "wireless-config.json")));
-            if (data == null || GetString(data, "Transport") != "NativeTls") throw new IOException("请先完成原生无线调试的手机配置。");
-            string identity = GetString(data, "PhoneIdentity");
+            ConfigurationDocument data = ConfigurationDocument.Parse(ReadShared(Path.Combine(root, "wireless-config.json")));
+            if (data == null || data.Transport != "NativeTls") throw new IOException("请先完成原生无线调试的手机配置。");
+            string identity = data.PhoneIdentity;
             if (!Regex.IsMatch(identity, "^[A-Za-z0-9_-]{1,100}$")) throw new IOException("请点击“更换/绑定手机”，先配对、检测并保存手机。");
-            int timeout = GetInt(data, "DisconnectTimeoutSeconds", 30);
+            int timeout = data.DisconnectTimeoutSeconds;
             if (timeout < 15 || timeout > 120) throw new IOException("失联保护时间必须为 15–120 秒。");
-            return data;
+            return data.Fields;
         }
         public RuntimeState ReadState(Func<string, bool> validSerial, Func<RuntimeState, bool> protectionValid)
         {

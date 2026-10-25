@@ -47,6 +47,8 @@
     <Compile Include="WorkerHost.cs" />
     <Compile Include="ActionProtocol.cs" />
     <Compile Include="RuntimeCommon.cs" />
+    <Compile Include="SharedDataModels.cs" />
+    <Compile Include="ConfigurationDocument.cs" />
     <Compile Include="RuntimeSessionStore.cs" />
     <Compile Include="OwnedProcessManager.cs" />
     <Compile Include="AndroidDeviceClient.cs" />
