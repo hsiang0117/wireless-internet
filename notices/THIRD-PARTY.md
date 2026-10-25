@@ -34,3 +34,28 @@ gnirehtet 使用 Android VPN 接口转发 IPv4 TCP/UDP，目前不支持 IPv6；
 1.4.2 安装包的构建记录使用 Inno Setup 6.7.3，来源为 [Inno Setup 官方下载页](https://jrsoftware.org/isdl.php)。Inno Setup 编译器是开发端工具，不随本仓库的运行目录或最终安装包载荷安装到用户电脑；本项目的 MIT 许可不替代该工具自身的许可。
 
 日常使用无需安装 C# 编译器或 Inno Setup；构建本项目 C# 组件的方法见 [source/BUILD.md](../source/BUILD.md)。
+
+## 安装器简体中文译文
+
+简体中文安装向导使用 [kira-96/Inno-Setup-Chinese-Simplified-Translation](https://github.com/kira-96/Inno-Setup-Chinese-Simplified-Translation) 的 `ChineseSimplified.isl`（6.5.0+）。仓库保留原译者文件头、译文副本和上游 MIT 许可；该许可独立于本项目自有代码的 MIT 许可。消息嵌入安装器，原许可如下：
+MIT License
+
+Copyright (c) 2019 - 2020 kirakira
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

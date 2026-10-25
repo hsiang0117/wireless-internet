@@ -1,0 +1,84 @@
+name: Release checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      full_regression:
+        description: Also run the historical offline regression suites
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    name: Validate Windows package
+    runs-on: windows-2022
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check, build and verify packaged source
+        env:
+          FULL_REGRESSION: ${{ github.event_name == 'workflow_dispatch' && inputs.full_regression == true }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidates = @(
+            (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
+            (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe')
+          )
+          $command = Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($command) { $candidates += $command.Source }
+          $inno = $candidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+          if (-not $inno) { throw 'The runner has no existing Inno Setup compiler; no tools are downloaded by this workflow.' }
+          $parameters = @{
+            DependencyDirectory = $env:GITHUB_WORKSPACE
+            InnoCompilerPath = $inno
+          }
+          $language = Join-Path $env:GITHUB_WORKSPACE 'installer\Languages\ChineseSimplified.isl'
+          if (-not (Test-Path -LiteralPath $language -PathType Leaf)) {
+            $language = Join-Path (Split-Path -Parent $inno) 'Languages\ChineseSimplified.isl'
+          }
+          if (Test-Path -LiteralPath $language -PathType Leaf) { $parameters.ChineseMessagesFile = $language }
+          if ($env:FULL_REGRESSION -eq 'true') { $parameters.FullRegression = $true }
+          & .\packaging\Run-Release.ps1 @parameters
+
+      - name: Upload verified installer
+        if: ${{ success() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wireless-internet-x64-${{ github.run_number }}
+          path: |
+            artifacts/release/WirelessInternet-*-Setup-x64.exe
+            artifacts/release/WirelessInternet-*-Setup-x64.exe.sha256
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload validation reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-validation-${{ github.run_number }}
+          path: |
+            artifacts/reports/release-validation.json
+            artifacts/reports/packaged-source.json
+            artifacts/reports/*.log
+          if-no-files-found: error
+          retention-days: 14

@@ -183,6 +183,8 @@ flowchart LR
 | `gnirehtet-rust-win64/` | gnirehtet 中继、APK 及上游许可证 |
 | `platform-tools/` | Android 平台工具及随附声明，运行共享时使用 ADB |
 | `tests/` | 使用合成数据和假中继进程的离线回归 |
+| `packaging/` | 发布流水线、安装包构建和包内源码重编校验 |
+| `.github/workflows/` | GitHub Actions 发布检查及构建产物 |
 
 1.5.0 完成第一轮结构调整：界面操作由独立协调器统一管理开始、断开、配置和退出；连接、保护及统计状态分离；短命令统一使用有输出上限、双流排空和超时控制的执行器。中继与保护监控仍保留独立进程，收起窗口不会停止共享。
 
@@ -199,6 +201,10 @@ flowchart LR
 1.9.0 统一桌面和 worker 的网络／会话字段定义，以及 worker 和绑定向导的配置文档。沿用现有 JSON 字段名、类型、缺省值和未知字段保留规则，无需重新配对。GUI 仍只读取原有观察字段，worker 仍严格校验完整会话；绑定向导保留界面索引容错与明确保存后才写入默认值的行为。原子写入、锁、采样和 30 秒失联保护保持不变。
 
 源码提供三个独立的 MSBuild 项目和 solution，共享源文件按组件编译，运行时不新增共享 DLL。编译说明见 [source/BUILD.md](source/BUILD.md)，离线测试方法见 [tests/README.md](tests/README.md)。默认测试只运行操作结果通道和共享数据模型的快速检查；历史安全回归和需要额外环境的检查可按需运行。离线回归不调用真实 ADB，也不修改网络设置。
+
+发布流程使用 [packaging/Run-Release.ps1](packaging/Run-Release.ps1)，串联快速检查、Release 构建、安装包编译和包内源码重编。重编结果须与三个已打包 EXE 及其运行配置逐一匹配；流水线同时核对载荷清单和安装包 SHA-256。历史全量回归通过 `-FullRegression` 显式选择；手机、DPI 和需要时的安装行为仍单独验收。
+
+[GitHub Actions 发布检查](https://github.com/hsiang0117/wireless-internet/actions/workflows/release.yml) 在 main 推送、PR 和手动运行时执行，成功后可在运行页面下载安装包及校验值，诊断报告独立保存。手动运行可勾选历史全量回归。构建方法和本地输入要求见 [packaging/README.md](packaging/README.md)。
 
 ## 许可证与第三方组件
 

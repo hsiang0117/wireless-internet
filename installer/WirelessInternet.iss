@@ -1,4 +1,4 @@
-﻿; Standard per-user installer. Compile with the signed Inno Setup 6.7.3 toolchain.
+﻿; Standard per-user installer. Compile with an existing Inno Setup 6.7+ toolchain.
 ; Optional ISCC overrides: /DStageDir=... /DOutputDir=... /DChineseMessagesFile=...
 ; Stage must be an explicit, sanitized payload; never point it at a live installation.
 ; No ADB, network command, runtime download, service or scheduled task runs in Setup.
@@ -12,7 +12,7 @@
   #define OutputDir AddBackslash(SourcePath) + "..\..\..\outputs"
 #endif
 #ifndef ChineseMessagesFile
-  #define ChineseMessagesFile AddBackslash(SourcePath) + "..\toolchain\inno\Languages\ChineseSimplified.isl"
+  #define ChineseMessagesFile AddBackslash(SourcePath) + "Languages\ChineseSimplified.isl"
 #endif
 
 [Setup]

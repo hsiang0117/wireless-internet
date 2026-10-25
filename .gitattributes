@@ -1,2 +1,7 @@
 # Keep shell regression fixtures usable in Windows checkouts.
 *.sh text eol=lf
+.github/workflows/*.yml text eol=lf
+
+# Preserve the original third-party translation and license bytes.
+installer/Languages/ChineseSimplified.isl -text whitespace=-blank-at-eol
+installer/Languages/LICENSE -text

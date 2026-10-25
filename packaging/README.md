@@ -2,6 +2,38 @@
 
 这里只包含开发/打包工具，不是运行时启动入口，不随安装包发布。不自动下载工具，不修改系统 PATH、网卡、路由或手机设置。
 
+## 一键发布检查
+
+在干净源码副本中，使用现有 MSBuild／.NET Framework 4.8 targeting pack 和 Inno Setup 6.7+：
+
+```powershell
+.\packaging\Run-Release.ps1 -DependencyDirectory . `
+    -InnoCompilerPath 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+```
+
+`DependencyDirectory` 为干净 checkout 或已核验的 ADB／gnirehtet／图标目录，仅复制显式依赖清单。含设备绑定或活动会话的安装目录会被拒绝；本机同时用于运行的仓库应另建源码副本，并传入干净依赖。入口使用独立开发文件锁避免同一副本并行发布，不使用应用的共享锁。
+
+默认按顺序执行 30 项快速检查、Release 构建及安装包编译、包内源码重编和产物校验。某一步失败即停止并记录失败阶段。需要历史全量时添加 `-FullRegression`；真实手机、GUI／DPI、安装器执行仍按实际改动单独验收。流水线只构建安装器，不运行安装器或应用。
+
+主要输出：
+
+- `artifacts/release/`：安装包及同名 `.sha256`。
+- `artifacts/reports/release-validation.json`：整条链路的阶段、用时、工具位置、版本与结果。
+- `artifacts/reports/packaged-source.json`：完整载荷核对和六个重编文件的哈希对照。
+- `artifacts/reports/*.log`：开发构建与检查输出；应用本身仍不默认保存日志。
+
+`Test-PackagedSource.ps1` 先核对显式清单、manifest 和全部载荷哈希，再复制包内源码和图标到唯一的 `artifacts/packaged-source-checks/ps-<GUID>/` 目录重编。三个 EXE 和三个相邻配置均须与 stage 字节一致，完成后复核 stage 未变。验证不往 stage 写文件，也不递归清理既有目录。
+
+源码构建产生的 `source/bin/`、`source/obj/` 以及发布报告、stage 和隔离重编目录均被 Git 忽略。测试成功后仍由测试入口清理本次有归属标记的生成目录；没有重复运行默认检查以外的历史测试。
+
+## GitHub Actions
+
+[Release checks](https://github.com/hsiang0117/wireless-internet/actions/workflows/release.yml) 对 main 推送和 PR 执行默认链路，手动运行可勾选 `full_regression`。使用 Windows 2022 runner 预装工具，Action 固定完整提交 SHA、仓库 token 仅 `contents: read`，不保存 checkout 凭据。
+
+成功运行上传安装包和校验文件；固定报告目录在成功或失败时单独上传，保留 14 天。stage、设备配置、状态、ADB 私钥和测试生成目录均不上传。产物是 Actions 的构建附件；GitHub Release 的正式发布仍由维护者选择。
+
+简体中文向导消息使用仓库内 `installer/Languages/` 的译文及原许可，CI 无需在线下载编译工具或译文。其来源与校验值见 [语言文件说明](../installer/Languages/README.md)。直接调用旧 `Build-Release.ps1` 时仍可显式传入 `ChineseMessagesFile`；低层构建与独立安装检查入口继续保留。
+
 `release-files.json` 是显式运行包白名单：源文件、第三方依赖和固定运行文件分开枚举。实际数量由清单计算，不在检查脚本中重复硬编码。`App.config`、三个 csproj、solution、README、LICENSE、BUILD.md 和自写 THIRD-PARTY.md 均包含在新包中；第三方 NOTICE/LICENSE 保持原文。
 
 1.6.0 将连接生命周期分为明确阶段，并增加会话存储、进程管理、手机命令和纯协议解析组件；这些源文件仍分别编入原有 EXE，不增加运行时共享 DLL。GUI 只共用纯 `AndroidProtocol`，worker 编入其余生命周期服务。发布前应核对项目的 Compile 清单与 `SourceFiles` 同步，不能只复制新的 worker 二进制而漏掉可重编所需的源码。

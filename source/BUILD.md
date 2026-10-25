@@ -97,6 +97,8 @@ GUI 与 worker 使用 `app.manifest`，保留 `dpiAware=true` 的 SystemAware �
 
 ## 打包边界
 
+发布入口为 `packaging/Run-Release.ps1`：默认快速检查 → 三个项目 Release 构建和安装包 → 隔离重编包内源码 → 比较三个 EXE／三个 `.exe.config` 的 SHA-256。输入来源、报告及历史回归选项见 [发布说明](../packaging/README.md)。GitHub Actions 使用同一入口，手机和 DPI 保持手工验收。
+
 打包使用显式文件清单，仅发布未绑定的默认配置，保留第三方 NOTICE/LICENSE 原文。README、LICENSE、源码 BUILD.md 和自写 THIRD-PARTY.md 随运行包提供。
 
 电脑端运行不依赖 PowerShell；工作区 `build.ps1` 只是调用 solution 并生成开发图标的辅助工具，不是运行依赖，不放进安装包。手机守护文本仍内置于 C#，按会话临时传输。
