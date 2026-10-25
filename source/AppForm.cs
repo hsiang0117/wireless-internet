@@ -26,6 +26,7 @@ namespace WirelessInternet
         private readonly string _root;
         private readonly bool _preview;
         private readonly Backend _backend;
+        private readonly UiOperationCoordinator _operations;
         private readonly System.Windows.Forms.Timer _timer;
         private readonly System.Windows.Forms.Timer _logTimer;
         private readonly Button _startButton;
@@ -73,22 +74,21 @@ namespace WirelessInternet
         private readonly Queue<int> _consoleLineLengths = new Queue<int>();
         private int _consoleLineCount;
         private int _consoleCharacterCount;
-        private Task<Snapshot> _pollTask;
+        private Task _pollTask { get { return _operations.PendingPoll; } }
         private Snapshot _snapshot;
-        private bool _polling;
-        private bool _actionBusy;
-        private volatile bool _closing;
-        private bool _exitRequested;
-        private bool _allowClose;
+        private bool _polling { get { return _operations.IsPolling; } }
+        private bool _actionBusy { get { return _operations.IsActionBusy; } }
+        private bool _closing { get { return _operations.IsClosing; } }
+        private bool _exitRequested { get { return _operations.IsExitRequested; } }
+        private bool _allowClose { get { return _operations.AllowClose; } }
         private bool _trayHintShown;
-        private TaskCompletionSource<int> _actionCompletion;
         private int _disposedBackend;
         private int _disposedUiResources;
         private string _lastSessionId;
         private TimeSpan _lastDuration = TimeSpan.Zero;
         private string _lastPollError;
         private bool _logsVisible = true;
-        private bool _setupOpen;
+        private bool _setupOpen { get { return _operations.IsConfiguring; } }
         private bool _configurationMissing;
         private string _phoneBindingNotice = String.Empty;
         private DateTime _phoneBindingNoticeUntil;
@@ -107,8 +107,12 @@ namespace WirelessInternet
         internal int PendingLogCharacters { get { lock (_pendingLogGate) return _pendingLogCharacters; } }
         internal int DroppedPendingLogCount { get { lock (_pendingLogGate) return _droppedPendingLogCount; } }
 
-        public AppForm(string root, bool preview)
+        public AppForm(string root, bool preview) : this(root, preview, new UiOperationCoordinator()) { }
+
+        internal AppForm(string root, bool preview, UiOperationCoordinator operations)
         {
+            if (operations == null) throw new ArgumentNullException("operations");
+            _operations = operations;
             SuspendLayout();
             _root = root;
             _preview = preview;
@@ -452,12 +456,12 @@ namespace WirelessInternet
 
         private async void PollOnce()
         {
-            if (_polling || _actionBusy || _closing || _exitRequested || _setupOpen) return;
-            _polling = true;
+            if (!_operations.TryBeginPoll()) return;
             try
             {
-                _pollTask = Task.Run(delegate { return _backend.Poll(); });
-                Snapshot next = await _pollTask;
+                Task<Snapshot> task = Task.Run(delegate { return _backend.Poll(); });
+                _operations.TrackPoll(task);
+                Snapshot next = await task;
                 if (!_closing && !_exitRequested && !IsDisposed)
                 {
                     _lastPollError = null;
@@ -481,7 +485,7 @@ namespace WirelessInternet
                     }
                 }
             }
-            finally { _polling = false; }
+            finally { _operations.CompletePoll(); }
         }
 
         private async void RunAction(string action)
@@ -491,8 +495,9 @@ namespace WirelessInternet
 
         private async Task<int> RunActionAsync(string action, bool exiting)
         {
-            if (_actionBusy || _closing || (_exitRequested && !exiting)) return -1;
-            if (_setupOpen) return -1;
+            if (action != "Start" && action != "Stop") throw new ArgumentException("Unknown action.", "action");
+            UiOperationKind kind = action == "Start" ? UiOperationKind.Start : UiOperationKind.Stop;
+            if (!_operations.CanBeginAction(kind, exiting)) return -1;
             if (action == "Start" && !_preview && !SetupBackend.IsConfigurationComplete(_root))
             {
                 await ConfigurePhoneAsync();
@@ -504,8 +509,7 @@ namespace WirelessInternet
                 return 0;
             }
             int exitCode = -1;
-            _actionCompletion = new TaskCompletionSource<int>();
-            _actionBusy = true;
+            if (!_operations.TryBeginAction(kind, exiting)) return -1;
             UpdateButtons();
             _status.Text = action == "Start" ? "正在建立连接…" : "正在断开连接…";
             _detail.Text = "请稍候，正在执行连接控制流程";
@@ -513,11 +517,7 @@ namespace WirelessInternet
             AppendLog(DateTime.Now, "控制", action == "Start" ? "开始连接手机。" : "正在停止本次共享。", "Info");
             try
             {
-                Task<Snapshot> pending = _pollTask;
-                if (pending != null && !pending.IsCompleted)
-                {
-                    try { await pending; } catch { }
-                }
+                await _operations.WaitForPollAsync();
                 exitCode = await Task.Run(delegate
                 {
                     return _backend.RunAction(action, delegate(string output)
@@ -531,8 +531,7 @@ namespace WirelessInternet
             catch (Exception ex) { AppendLog(DateTime.Now, "控制", ex.Message, "Error"); }
             finally
             {
-                _actionBusy = false;
-                _actionCompletion.TrySetResult(exitCode);
+                _operations.CompleteAction(exitCode);
                 UpdateButtons();
                 if (!_exitRequested) PollOnce();
             }
@@ -558,30 +557,34 @@ namespace WirelessInternet
             }
             _phone.Text = "手机 · " + (String.IsNullOrWhiteSpace(value.Phone) ? "等待连接" : value.Phone);
             _endpoint.Text = "无线端点  " + (String.IsNullOrWhiteSpace(value.Endpoint) ? "—" : value.Endpoint);
-            if (value.HasSession && value.Healthy)
+            string protectionTimeout = (value.ProtectionTimeoutSeconds > 0 ? value.ProtectionTimeoutSeconds : 30).ToString(CultureInfo.InvariantCulture);
+            if (value.HasSession && value.ProtectionState == ProtectionState.Healthy)
             {
-                _protection.Text = "● 30 秒失联保护已启用\n心跳 " + FormatAge(value.HeartbeatAgeSeconds) + " 前";
+                _protection.Text = "● " + protectionTimeout + " 秒失联保护已启用\n心跳 " + FormatAge(value.HeartbeatAgeSeconds) + " 前";
                 _protection.ForeColor = AccentColor;
             }
             else if (value.HasSession)
             {
-                _protection.Text = "● 连接恢复 / 保护检查中\n心跳 " + FormatAge(value.HeartbeatAgeSeconds) + " 前";
+                _protection.Text = (value.ProtectionState == ProtectionState.Degraded ? "● 失联保护异常" :
+                    value.ProtectionState == ProtectionState.Inactive ? "● 失联保护未启用" : "● 失联保护待确认") +
+                    "\n心跳 " + FormatAge(value.HeartbeatAgeSeconds) + " 前";
                 _protection.ForeColor = Color.FromArgb(255, 193, 99);
             }
             else
             {
-                _protection.Text = "30 秒失联保护\n随共享会话自动启用";
+                _protection.Text = protectionTimeout + " 秒失联保护\n随共享会话自动启用";
                 _protection.ForeColor = MutedColor;
             }
             ulong total = UInt64.MaxValue - value.DownloadBytes < value.UploadBytes ? UInt64.MaxValue : value.DownloadBytes + value.UploadBytes;
             _totalCard.SetValue(value.TrafficAvailable ? FormatBytes(total) : "—", value.TrafficAvailable ? "下载 " + FormatBytes(value.DownloadBytes) + "   /   上传 " + FormatBytes(value.UploadBytes) : "等待有效流量采样");
-            _downloadCard.SetValue(value.SamplingOk ? FormatRate(value.DownloadBytesPerSecond) : "—", value.SamplingOk ? "手机接收" : "等待有效采样");
-            _uploadCard.SetValue(value.SamplingOk ? FormatRate(value.UploadBytesPerSecond) : "—", value.SamplingOk ? "手机发送" : "等待有效采样");
+            bool telemetryCurrent = value.TelemetryState == TelemetryState.Current && value.SamplingOk;
+            _downloadCard.SetValue(telemetryCurrent ? FormatRate(value.DownloadBytesPerSecond) : "—", telemetryCurrent ? "手机接收" : "等待有效采样");
+            _uploadCard.SetValue(telemetryCurrent ? FormatRate(value.UploadBytesPerSecond) : "—", telemetryCurrent ? "手机发送" : "等待有效采样");
             TimeSpan duration = value.HasSession && value.StartedAt.HasValue ? DateTime.Now - value.StartedAt.Value.ToLocalTime() : _lastDuration;
             if (duration < TimeSpan.Zero) duration = TimeSpan.Zero;
             _lastDuration = duration;
             _durationCard.SetValue(((int)duration.TotalHours).ToString("00", CultureInfo.InvariantCulture) + ":" + duration.Minutes.ToString("00", CultureInfo.InvariantCulture) + ":" + duration.Seconds.ToString("00", CultureInfo.InvariantCulture), value.HasSession ? "当前共享会话" : value.StartedAt.HasValue ? "上次共享已结束" : "等待开始连接");
-            if (value.HasSession) _chart.AddSample(value.SamplingOk ? value.DownloadBytesPerSecond : Double.NaN, value.SamplingOk ? value.UploadBytesPerSecond : Double.NaN);
+            if (value.HasSession) _chart.AddSample(telemetryCurrent ? value.DownloadBytesPerSecond : Double.NaN, telemetryCurrent ? value.UploadBytesPerSecond : Double.NaN);
             if (!String.IsNullOrWhiteSpace(value.TrafficNote)) _trafficNote.Text = value.TrafficNote;
             UpdateConnections(value.Connections);
             if (value.Logs != null)
@@ -635,26 +638,26 @@ namespace WirelessInternet
         {
             if (_closing || IsDisposed) return;
             bool hasSession = _snapshot != null && _snapshot.HasSession;
-            _startButton.Enabled = !_actionBusy && !_exitRequested && !_setupOpen && !(_snapshot != null && _snapshot.Healthy);
-            _stopButton.Enabled = !_actionBusy && !_exitRequested && !_setupOpen && hasSession;
-            _startButton.Text = _actionBusy ? "处理中…" : hasSession && _snapshot.Healthy ? "已连接" : hasSession ? "重新连接" : _configurationMissing ? "配置手机" : "开始连接";
-            _stopButton.Text = _actionBusy ? "请稍候" : "断开连接";
-            _settingsButton.Enabled = !_preview && !_actionBusy && !_exitRequested && !_setupOpen;
+            UiOperationPresentation view = _operations.GetPresentation(_preview, hasSession,
+                _snapshot != null && _snapshot.Healthy, _configurationMissing, _snapshot == null ? null : _snapshot.StatusText);
+            _startButton.Enabled = view.StartEnabled;
+            _stopButton.Enabled = view.StopEnabled;
+            _startButton.Text = view.StartText;
+            _stopButton.Text = view.StopText;
+            _settingsButton.Enabled = view.SettingsEnabled;
             _traySettings.Enabled = _settingsButton.Enabled;
             _traySettings.ToolTipText = hasSession ? "请先断开当前共享，再更换或绑定手机。" : "重新打开手机配置向导；仅成功保存才替换原绑定。";
             _trayStart.Enabled = _startButton.Enabled;
             _trayStop.Enabled = _stopButton.Enabled;
-            _trayExit.Enabled = !_exitRequested;
-            _trayExit.Text = _exitRequested ? "正在断开并退出…" : "退出";
-            string trayState = _exitRequested ? "正在断开并退出" : _actionBusy ? "正在处理连接" :
-                _snapshot == null ? "正在读取状态" : _snapshot.StatusText;
-            string tooltip = "无线网络共享 · " + trayState;
+            _trayExit.Enabled = view.ExitEnabled;
+            _trayExit.Text = view.ExitText;
+            string tooltip = "无线网络共享 · " + view.TrayState;
             _trayIcon.Text = tooltip.Length > 63 ? tooltip.Substring(0, 63) : tooltip;
         }
 
         private async Task<bool> ConfigurePhoneAsync()
         {
-            if (_preview || _setupOpen || _actionBusy || _exitRequested || _closing) return false;
+            if (!_operations.CanBeginConfiguration(_preview)) return false;
             try
             {
                 if (PhoneBindingHasSession())
@@ -668,12 +671,11 @@ namespace WirelessInternet
                 ShowPhoneBindingNotice("暂不能更换手机：" + exception.Message);
                 return false;
             }
-            _setupOpen = true;
+            if (!_operations.TryBeginConfiguration(_preview)) return false;
             UpdateButtons();
             try
             {
-                Task<Snapshot> pending = _pollTask;
-                if (pending != null && !pending.IsCompleted) { try { await pending; } catch { } }
+                await _operations.WaitForPollAsync();
                 if (_closing || IsDisposed) return false;
                 if (PhoneBindingHasSession())
                 {
@@ -699,7 +701,7 @@ namespace WirelessInternet
             catch (Exception exception) { ShowPhoneBindingNotice(exception.Message); }
             finally
             {
-                _setupOpen = false;
+                _operations.CompleteConfiguration();
                 if (!_closing && !IsDisposed) { _timer.Start(); UpdateButtons(); PollOnce(); }
             }
             return false;
@@ -1035,7 +1037,7 @@ namespace WirelessInternet
             // Windows may terminate us during shutdown. Do not hide or indefinitely veto shutdown;
             // the existing phone-local timeout remains independent of this GUI.
             if (!_allowClose && !_preview && !_actionBusy) StartShutdownStop();
-            _closing = true;
+            _operations.BeginClosing();
             _timer.Stop();
             _logTimer.Stop();
         }
@@ -1099,8 +1101,7 @@ namespace WirelessInternet
 
         internal async void ExitApplication()
         {
-            if (_closing || _exitRequested) return;
-            _exitRequested = true;
+            if (!_operations.TryRequestExit()) return;
             UpdateButtons();
             _status.Text = "正在断开并退出…";
             _detail.Text = "确认本次共享已结束后，程序将自动退出。";
@@ -1108,22 +1109,20 @@ namespace WirelessInternet
             try
             {
                 // A Start already in flight must finish before Stop; new actions/polls are blocked.
-                TaskCompletionSource<int> action = _actionCompletion;
-                if (_actionBusy && action != null) await action.Task;
-                Task<Snapshot> pending = _pollTask;
-                if (pending != null && !pending.IsCompleted) { try { await pending; } catch { } }
+                await _operations.WaitForActionAsync();
+                await _operations.WaitForPollAsync();
                 if (!_preview && await Task.Run(delegate { return HasSessionOnDisk(); }))
                 {
                     int stopped = await RunActionAsync("Stop", true);
                     if (stopped != 0 || await Task.Run(delegate { return HasSessionOnDisk(); })) throw new IOException("尚未确认共享已断开，请查看连接日志后重试退出。");
                 }
-                _allowClose = true;
+                _operations.PermitClose();
                 Close();
             }
             catch (Exception ex)
             {
                 if (_closing || IsDisposed) return;
-                _exitRequested = false;
+                _operations.CancelExit();
                 AppendLog(DateTime.Now, "退出", "退出未完成：" + ex.Message + " 程序继续运行。", "Error");
                 RestoreFromTray();
                 _status.Text = "退出未完成";
@@ -1138,7 +1137,7 @@ namespace WirelessInternet
         // Ordinary user exit is exclusively ExitApplication(), which first stops sharing.
         internal void CloseObserverAfterCapture()
         {
-            _allowClose = true;
+            _operations.PermitClose();
             Close();
         }
 
@@ -1153,7 +1152,7 @@ namespace WirelessInternet
         private void ReleaseUiResources()
         {
             if (Interlocked.Exchange(ref _disposedUiResources, 1) != 0) return;
-            _closing = true;
+            _operations.BeginClosing();
             if (_timer != null) { _timer.Stop(); _timer.Dispose(); }
             if (_logTimer != null) { _logTimer.Stop(); _logTimer.Dispose(); }
             lock (_pendingLogGate)
@@ -1164,7 +1163,7 @@ namespace WirelessInternet
             }
             if (_trayIcon != null) { _trayIcon.Visible = false; _trayIcon.Dispose(); }
             if (_trayMenu != null) _trayMenu.Dispose();
-            Task<Snapshot> pending = _pollTask;
+            Task pending = _pollTask;
             if (pending != null && !pending.IsCompleted) pending.ContinueWith(delegate { DisposeBackend(); });
             else DisposeBackend();
         }

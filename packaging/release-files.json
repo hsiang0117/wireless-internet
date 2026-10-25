@@ -1,0 +1,21 @@
+{
+  "Version": "1.5.0",
+  "SourceFiles": [
+    "AppForm.cs", "Backend.cs", "ConnectionController.cs", "MemoryLog.cs",
+    "NativeNetwork.cs", "PhoneGuardSource.cs", "ProcessExecution.cs", "Program.cs",
+    "RelayLogHost.cs", "RuntimeCommon.cs", "SessionStatus.cs", "SetupBackend.cs",
+    "SetupForm.cs", "UiDpi.cs", "UiOperationCoordinator.cs", "WatchdogController.cs", "WorkerHost.cs",
+    "App.config", "app.manifest", "WirelessInternet.csproj", "ConnectionWorker.csproj",
+    "RelayLogHost.csproj", "WirelessInternet.sln", "BUILD.md"
+  ],
+  "DependencyFiles": [
+    "platform-tools/adb.exe", "platform-tools/AdbWinApi.dll", "platform-tools/AdbWinUsbApi.dll",
+    "platform-tools/libwinpthread-1.dll", "platform-tools/NOTICE.txt", "platform-tools/source.properties",
+    "gnirehtet-rust-win64/gnirehtet.exe", "gnirehtet-rust-win64/gnirehtet.apk", "gnirehtet-rust-win64/LICENSE"
+  ],
+  "FixedPayloadFiles": [
+    "WirelessInternet.exe", "WirelessInternet.exe.config", "README.md", "LICENSE", "wireless-config.json",
+    "support/ConnectionWorker.exe", "support/ConnectionWorker.exe.config", "support/RelayLogHost.exe",
+    "support/RelayLogHost.exe.config", "support/wireless.ico", "notices/THIRD-PARTY.md"
+  ]
+}

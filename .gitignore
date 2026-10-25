@@ -19,9 +19,18 @@ Desktop.ini
 /logs/
 /tests/bin/
 /tests/results/
+/tests/install-smoke-*/
 /tests/*.exe
 /tests/*.pdb
 /tests/*-results.json
+# MSBuild intermediate and output directories
+/source/bin/
+/source/obj/
+# Release staging and local acceptance reports
+/stage/
+/artifacts/
+/release-payload-manifest.json
+/installer-smoke-result.json
 .android/
 *.user
 *.suo

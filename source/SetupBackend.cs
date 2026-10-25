@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -343,41 +343,20 @@ namespace WirelessInternet
         public SetupCommandResult Run(string executable, string arguments, string standardInput, int timeoutMilliseconds)
         {
             if (!File.Exists(executable)) throw new IOException("ADB 工具缺失，请重新安装完整工具包。");
-            using (Process process = new Process())
+            SharedCommandOptions options = new SharedCommandOptions {
+                WorkingDirectory = Path.GetDirectoryName(executable), TimeoutMilliseconds = timeoutMilliseconds,
+                MaximumOutputCharacters = 16384, MaximumErrorCharacters = 16384,
+                DrainTimeoutMilliseconds = 1000, StandardInput = standardInput
+            };
+            try
             {
-                process.StartInfo = new ProcessStartInfo(executable, arguments) { WorkingDirectory = Path.GetDirectoryName(executable),
-                    UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = standardInput != null,
-                    RedirectStandardOutput = true, RedirectStandardError = true, StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8 };
-                process.Start();
-                Task<string> stdout = Task.Factory.StartNew(delegate { return ReadCapped(process.StandardOutput); }, TaskCreationOptions.LongRunning);
-                Task<string> stderr = Task.Factory.StartNew(delegate { return ReadCapped(process.StandardError); }, TaskCreationOptions.LongRunning);
-                if (standardInput != null)
-                {
-                    try { process.StandardInput.Write(standardInput); process.StandardInput.Flush(); }
-                    finally { standardInput = null; process.StandardInput.Close(); }
-                }
-                if (!process.WaitForExit(timeoutMilliseconds))
-                {
-                    try { process.Kill(); process.WaitForExit(1000); } catch { }
-                    throw new IOException("ADB 操作超时，仅结束本次检测命令，请重试。");
-                }
-                if (!Task.WaitAll(new Task[] { stdout, stderr }, 1000)) throw new IOException("ADB 检测输出未完成，请重试。");
-                return new SetupCommandResult { ExitCode = process.ExitCode, Output = stdout.Result, Error = stderr.Result };
+                SharedCommandResult captured = ProcessExecution.Run(executable, arguments, options);
+                if (captured.TimedOut) throw new IOException("ADB 操作超时，仅结束本次检测命令，请重试。");
+                if (captured.OutputIncomplete) throw new IOException("ADB 检测输出未完成，请重试。");
+                if (captured.InputFailed) throw new IOException("ADB 检测输入未完成，请重试。");
+                return new SetupCommandResult { ExitCode = captured.ExitCode, Output = captured.Output, Error = captured.Error };
             }
-        }
-
-        static string ReadCapped(StreamReader reader)
-        {
-            const int limit = 16384;
-            StringBuilder text = new StringBuilder(1024);
-            char[] block = new char[1024];
-            int count;
-            while ((count = reader.Read(block, 0, block.Length)) > 0)
-            {
-                int keep = Math.Min(count, limit - text.Length);
-                if (keep > 0) text.Append(block, 0, keep);
-            }
-            return text.ToString();
+            finally { standardInput = null; options.StandardInput = null; }
         }
     }
 }

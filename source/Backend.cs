@@ -7,6 +7,7 @@ using System.Net;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 
@@ -27,6 +28,10 @@ namespace WirelessInternet
     {
         public string SessionId = "", Phone = "", Endpoint = "", StatusText = "未连接", Detail = "", TrafficNote = "";
         public bool HasSession, Healthy, SamplingOk, TrafficAvailable;
+        public ConnectionState ConnectionState = ConnectionState.Disconnected;
+        public ProtectionState ProtectionState = ProtectionState.Inactive;
+        public TelemetryState TelemetryState = TelemetryState.Unavailable;
+        public int ProtectionTimeoutSeconds = 30;
         public double HeartbeatAgeSeconds = double.NaN;
         public ulong DownloadBytes, UploadBytes;
         public double DownloadBytesPerSecond = double.NaN, UploadBytesPerSecond = double.NaN;
@@ -53,10 +58,27 @@ namespace WirelessInternet
         public int ExitCode;
         public string Output, Error;
     }
+    public sealed class SessionObservation
+    {
+        public SessionRecord State;
+        public bool RelayOwned, MonitorOwned;
+        public double HeartbeatAgeSeconds = double.NaN;
+    }
+    // Read-only observation boundary; production and deterministic tests use the
+    // same polling/state mapping without granting this interface control actions.
+    public interface ISessionObservationSource
+    {
+        SessionObservation ReadSession();
+        List<ConnectionInfo> ReadConnections(SessionRecord state);
+        PhoneCounters ReadPhone(SessionRecord state);
+        MemoryLogBatch ReadLogs(string pipeName, long after);
+        long Timestamp { get; }
+    }
     public sealed class Backend : IDisposable
     {
-        readonly string root, statePath, adbPath;
+        readonly string root;
         readonly bool preview;
+        readonly ISessionObservationSource observations;
         string logPipe = "";
         long logCursor, nextLogSequence;
         bool logUnavailable;
@@ -70,37 +92,26 @@ namespace WirelessInternet
         int sampleFailures, stateFailures;
         Snapshot lastSnapshot;
         int previewTick;
+        long actionGeneration;
 
-        public Backend(string root, bool preview)
+        public Backend(string root, bool preview) : this(root, preview, null) { }
+        public Backend(string root, bool preview, ISessionObservationSource observations)
         {
             this.root = Path.GetFullPath(root);
             this.preview = preview;
-            statePath = Path.Combine(root, "state", "wireless-session.json");
-            adbPath = Path.Combine(root, "platform-tools", "adb.exe");
-
+            this.observations = observations ?? new SystemSessionObservationSource(this.root);
         }
         public static string Quote(string value)
         {
-            if (value.Length > 0 && !Regex.IsMatch(value, "[\\s\"]")) return value;
-            return "\"" + Regex.Replace(Regex.Replace(value, "(\\\\*)\"", "$1$1\\\""), "(\\\\+)$", "$1$1") + "\"";
+            return ProcessExecution.Quote(value);
         }
         public static CommandResult RunBounded(string exe, string arguments, string workingDirectory, int timeout)
         {
-            using (Process p = new Process())
-            {
-                p.StartInfo = new ProcessStartInfo(exe, arguments) { UseShellExecute = false, CreateNoWindow = true,
-                    WorkingDirectory = workingDirectory, RedirectStandardOutput = true, RedirectStandardError = true,
-                    StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8 };
-                p.Start();
-                Task<string> output = p.StandardOutput.ReadToEndAsync(), error = p.StandardError.ReadToEndAsync();
-                if (!p.WaitForExit(timeout))
-                {
-                    try { p.Kill(); p.WaitForExit(500); } catch { }
-                    throw new IOException("采样超时；仅结束本次 ADB 查询，后台共享与保护继续运行。");
-                }
-                if (!Task.WaitAll(new Task[] { output, error }, 500)) throw new IOException("采样输出暂未就绪。");
-                return new CommandResult { ExitCode = p.ExitCode, Output = output.Result, Error = error.Result };
-            }
+            SharedCommandResult result = ProcessExecution.Run(exe, arguments, new SharedCommandOptions {
+                WorkingDirectory = workingDirectory, TimeoutMilliseconds = timeout, DrainTimeoutMilliseconds = 500 });
+            if (result.TimedOut) throw new IOException("采样超时；仅结束本次 ADB 查询，后台共享与保护继续运行。");
+            if (result.OutputIncomplete) throw new IOException("采样输出暂未就绪。");
+            return new CommandResult { ExitCode = result.ExitCode, Output = result.Output, Error = result.Error };
         }
         static string ReadShared(string path)
         {
@@ -126,7 +137,7 @@ namespace WirelessInternet
             }
             catch { return false; }
         }
-        bool OwnsMonitor(SessionRecord state)
+        static bool OwnsMonitor(string root, SessionRecord state)
         {
             string worker = Path.Combine(root, "support", "ConnectionWorker.exe");
             if (state.RuntimeEngine == "CSharp")
@@ -173,12 +184,38 @@ namespace WirelessInternet
             return new PhoneCounters { Interface = iface, Key = vpn.Groups["id"].Value + "/" + iface + "/" + created.Groups[1].Value,
                 Download = UInt64.Parse(dev.Groups["rx"].Value), Upload = UInt64.Parse(dev.Groups["tx"].Value), Uptime = phoneUptime, StartedAt = start };
         }
-        PhoneCounters QueryPhone(SessionRecord state)
+        sealed class SystemSessionObservationSource : ISessionObservationSource
         {
-            const string query = "printf '__IDENTITY__\\n'; getprop ro.serialno; printf '__UPTIME__\\n'; cat /proc/uptime; printf '__VPN__\\n'; dumpsys connectivity | grep -F 'ni{VPN CONNECTED extra: VPN:com.genymobile.gnirehtet}'; printf '__DEV__\\n'; cat /proc/net/dev; printf '__VPN_AFTER__\\n'; dumpsys connectivity | grep -F 'ni{VPN CONNECTED extra: VPN:com.genymobile.gnirehtet}'";
-            CommandResult result = RunBounded(adbPath, "-s " + Quote(state.WirelessSerial) + " shell " + Quote(query), root, 3500);
-            if (result.ExitCode != 0) throw new IOException("手机采样不可用：" + (result.Error + " " + result.Output).Trim());
-            return ParsePhone(result.Output, state.PhoneIdentity);
+            readonly string root, statePath, relayPath, adbPath;
+            public SystemSessionObservationSource(string root)
+            {
+                this.root = root; statePath = Path.Combine(root, "state", "wireless-session.json");
+                relayPath = Path.Combine(root, "gnirehtet-rust-win64", "gnirehtet.exe"); adbPath = Path.Combine(root, "platform-tools", "adb.exe");
+            }
+            bool RelayMatches(SessionRecord state)
+            { return OwnsProcess(state.RelayProcessId, state.RelayStartTimeUtcTicks, relayPath) && String.Equals(state.RelayPath, relayPath, StringComparison.OrdinalIgnoreCase); }
+            public SessionObservation ReadSession()
+            {
+                if (!File.Exists(statePath)) return null;
+                SessionRecord state = ReadState(statePath);
+                return new SessionObservation { State = state, RelayOwned = RelayMatches(state), MonitorOwned = OwnsMonitor(root, state), HeartbeatAgeSeconds = HeartbeatAge(state) };
+            }
+            public List<ConnectionInfo> ReadConnections(SessionRecord state)
+            {
+                if (!RelayMatches(state)) return new List<ConnectionInfo>();
+                List<ConnectionInfo> connections = TcpTable.Get(state.RelayProcessId);
+                if (!RelayMatches(state)) connections.Clear();
+                return connections;
+            }
+            public PhoneCounters ReadPhone(SessionRecord state)
+            {
+                const string query = "printf '__IDENTITY__\\n'; getprop ro.serialno; printf '__UPTIME__\\n'; cat /proc/uptime; printf '__VPN__\\n'; dumpsys connectivity | grep -F 'ni{VPN CONNECTED extra: VPN:com.genymobile.gnirehtet}'; printf '__DEV__\\n'; cat /proc/net/dev; printf '__VPN_AFTER__\\n'; dumpsys connectivity | grep -F 'ni{VPN CONNECTED extra: VPN:com.genymobile.gnirehtet}'";
+                CommandResult result = RunBounded(adbPath, "-s " + Quote(state.WirelessSerial) + " shell " + Quote(query), root, 3500);
+                if (result.ExitCode != 0) throw new IOException("手机采样不可用：" + (result.Error + " " + result.Output).Trim());
+                return ParsePhone(result.Output, state.PhoneIdentity);
+            }
+            public MemoryLogBatch ReadLogs(string pipeName, long after) { return MemoryLogWire.Fetch(pipeName, after); }
+            public long Timestamp { get { return Stopwatch.GetTimestamp(); } }
         }
         void ReadMemoryLogs(Snapshot snapshot, SessionRecord state)
         {
@@ -186,7 +223,7 @@ namespace WirelessInternet
             if (!MemoryLogWire.ValidName(logPipe)) return;
             try
             {
-                MemoryLogBatch batch = MemoryLogWire.Fetch(logPipe, logCursor);
+                MemoryLogBatch batch = observations.ReadLogs(logPipe, logCursor);
                 if (batch.NextSequence < logCursor) throw new IOException("实时日志序号已改变。");
                 if (batch.DroppedCount > 0) Add(snapshot, "日志", "仅显示最近事件，已略过 " + batch.DroppedCount + " 条较早记录。日志不保存到文件。", "INFO");
                 foreach (MemoryLogRecord item in batch.Entries)
@@ -211,8 +248,20 @@ namespace WirelessInternet
         {
             if (preview) return Preview();
             Snapshot snap = new Snapshot { DownloadBytes = savedDown, UploadBytes = savedUp, StartedAt = savedStart, TrafficAvailable = savedTrafficAvailable,
+                TelemetryState = savedTrafficAvailable ? TelemetryState.Stale : TelemetryState.Unavailable,
                 TrafficNote = "手机 VPN 接口累计（含协议开销），不代表运营商计费；速度约每秒采样。" };
-            if (!File.Exists(statePath))
+            SessionObservation observation;
+            try { observation = observations.ReadSession(); stateFailures = 0; }
+            catch (Exception e)
+            {
+                stateFailures++;
+                snap.HasSession = true; snap.StatusText = "读取状态中";
+                snap.ConnectionState = ConnectionState.Unknown; snap.ProtectionState = ProtectionState.Unknown;
+                snap.Detail = "共享状态暂不可读；后台保护独立运行。";
+                if (stateFailures == 3) Add(snap, "状态", e.Message, "WARN");
+                return snap;
+            }
+            if (observation == null)
             {
                 snap.StatusText = "未连接";
                 snap.Detail = "手机保持 Wi-Fi、热点及无线调试开启，电脑连接手机热点后，点击开始连接。";
@@ -229,39 +278,27 @@ namespace WirelessInternet
                 lastSnapshot = snap;
                 return snap;
             }
-            SessionRecord state;
-            try { state = ReadState(statePath); stateFailures = 0; }
-            catch (Exception e)
-            {
-                stateFailures++;
-                snap.HasSession = true; snap.StatusText = "读取状态中";
-                snap.Detail = "会话文件正在更新；后台保护独立运行。";
-                if (stateFailures == 3) Add(snap, "状态", e.Message, "WARN");
-                return snap;
-            }
+            SessionRecord state = observation.State;
             if (session != state.ProtectionSessionId)
             {
                 session = state.ProtectionSessionId;
                 counterKey = ""; lastSampleQpc = 0; sampleFailures = 0;
                 savedDown = savedUp = 0; savedStart = null;
                 savedTrafficAvailable = snap.TrafficAvailable = false;
+                snap.TelemetryState = TelemetryState.Unavailable;
                 snap.DownloadBytes = snap.UploadBytes = 0; snap.StartedAt = null;
                 lastConnections.Clear(); logPipe = ""; logCursor = 0;
                 Add(snap, "会话", "已接管受保护的无线共享会话 " + session.Substring(0, 8) + "；关闭本窗口后仍可继续共享。", "INFO");
             }
             snap.HasSession = true; snap.SessionId = session; snap.Phone = state.PhoneIdentity; snap.Endpoint = state.WirelessSerial;
-            snap.HeartbeatAgeSeconds = HeartbeatAge(state);
-            string relay = Path.Combine(root, "gnirehtet-rust-win64", "gnirehtet.exe");
-            bool relayOk = OwnsProcess(state.RelayProcessId, state.RelayStartTimeUtcTicks, relay) &&
-                String.Equals(state.RelayPath, relay, StringComparison.OrdinalIgnoreCase);
-            bool guardOk = OwnsMonitor(state);
-            snap.Healthy = relayOk && guardOk && snap.HeartbeatAgeSeconds >= 0 && snap.HeartbeatAgeSeconds <= 12;
+            snap.ProtectionTimeoutSeconds = state.ProtectionTimeoutSeconds >= 15 && state.ProtectionTimeoutSeconds <= 120 ? state.ProtectionTimeoutSeconds : 30;
+            ApplyHealth(snap, observation, false);
+            bool relayOk = observation.RelayOwned;
             if (relayOk)
             {
                 try
                 {
-                    snap.Connections = TcpTable.Get(state.RelayProcessId);
-                    if (!OwnsProcess(state.RelayProcessId, state.RelayStartTimeUtcTicks, relay)) snap.Connections.Clear();
+                    snap.Connections = observations.ReadConnections(state);
                     HashSet<string> current = new HashSet<string>();
                     foreach (ConnectionInfo c in snap.Connections)
                     {
@@ -278,14 +315,15 @@ namespace WirelessInternet
             {
                 try
                 {
-                    PhoneCounters c = QueryPhone(state);
-                    SessionRecord after = ReadState(statePath);
-                    if (after.ProtectionSessionId != session || after.WirelessSerial != state.WirelessSerial) throw new IOException("会话已切换，丢弃旧样本。");
-                    snap.HeartbeatAgeSeconds = HeartbeatAge(after);
-                    snap.Healthy = OwnsProcess(after.RelayProcessId, after.RelayStartTimeUtcTicks, relay) &&
-                        OwnsMonitor(after) &&
-                        snap.HeartbeatAgeSeconds >= 0 && snap.HeartbeatAgeSeconds <= 12;
-                    long now = Stopwatch.GetTimestamp();
+                    PhoneCounters c = observations.ReadPhone(state);
+                    SessionObservation after = observations.ReadSession();
+                    if (after == null || after.State.ProtectionSessionId != session || after.State.WirelessSerial != state.WirelessSerial)
+                    {
+                        snap.ConnectionState = ConnectionState.Unknown; snap.ProtectionState = ProtectionState.Unknown; snap.Healthy = false;
+                        throw new IOException("会话已切换，丢弃旧样本。");
+                    }
+                    ApplyHealth(snap, after, true);
+                    long now = observations.Timestamp;
                     bool continuous = counterKey == c.Key && lastSampleQpc > 0 && c.Uptime >= lastPhoneUptime &&
                         c.Download >= lastDown && c.Upload >= lastUp;
                     double seconds = (now - lastSampleQpc) / (double)Stopwatch.Frequency;
@@ -300,6 +338,7 @@ namespace WirelessInternet
                     savedStart = snap.StartedAt = c.StartedAt;
                     counterKey = c.Key; lastSampleQpc = now; lastPhoneUptime = c.Uptime;
                     snap.SamplingOk = true;
+                    snap.TelemetryState = TelemetryState.Current;
                     savedTrafficAvailable = snap.TrafficAvailable = true;
                     if (sampleFailures > 0) Add(snap, "流量", "手机采样已恢复；重新建立速度基线。", "INFO");
                     sampleFailures = 0; lastSampleError = "";
@@ -307,15 +346,18 @@ namespace WirelessInternet
                 catch (Exception e)
                 {
                     sampleFailures++;
+                    snap.TelemetryState = snap.TrafficAvailable ? TelemetryState.Stale : TelemetryState.Unavailable;
                     if (lastSampleError != e.Message) { Add(snap, "手机采样", e.Message, "WARN"); lastSampleError = e.Message; }
-                    snap.TrafficNote = "采样暂不可用：保留最后流量，速度显示 —。约 " + state.ProtectionTimeoutSeconds + " 秒失联保护独立运行。";
+                    snap.TrafficNote = "统计采样暂不可用：保留最后流量，速度显示 —。连接与保护状态分别判断。";
                 }
             }
-            snap.Healthy = snap.Healthy && snap.SamplingOk;
-            snap.StatusText = snap.Healthy ? "已连接" : "连接恢复中";
-            snap.Detail = snap.Healthy ? "手机 VPN 在线 · 失联保护约 " + state.ProtectionTimeoutSeconds + " 秒 · 最近心跳 " +
-                snap.HeartbeatAgeSeconds.ToString("0.0") + " 秒前" :
-                "正在核实手机与保护心跳；持续失联约 " + state.ProtectionTimeoutSeconds + " 秒后结束本次共享。";
+            snap.StatusText = snap.ConnectionState == ConnectionState.Connected ?
+                (snap.ProtectionState == ProtectionState.Healthy ? "已连接" : "已连接 · 保护异常") :
+                snap.ConnectionState == ConnectionState.Unknown ? "连接状态待确认" : "连接恢复中";
+            snap.Detail = snap.Healthy ? "手机 VPN 在线 · 失联保护约 " + snap.ProtectionTimeoutSeconds + " 秒 · 最近心跳 " +
+                snap.HeartbeatAgeSeconds.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + " 秒前" :
+                snap.ConnectionState == ConnectionState.Connected ? "共享链路可用，失联保护状态异常，请查看保护状态并重新连接。" :
+                "正在核实手机与保护心跳；持续失联约 " + snap.ProtectionTimeoutSeconds + " 秒后结束本次共享。";
             if (lastStatus != snap.StatusText)
             {
                 Add(snap, "状态", snap.StatusText + " · " + snap.Detail, snap.Healthy ? "INFO" : "WARN"); lastStatus = snap.StatusText;
@@ -323,41 +365,41 @@ namespace WirelessInternet
             ReadMemoryLogs(snap, state); lastSnapshot = snap;
             return snap;
         }
+        static void ApplyHealth(Snapshot snapshot, SessionObservation observation, bool phoneVpnConfirmed)
+        {
+            SessionHealth health = SessionHealth.Assess(true, observation.RelayOwned, observation.MonitorOwned,
+                observation.HeartbeatAgeSeconds, phoneVpnConfirmed);
+            snapshot.ConnectionState = health.Connection; snapshot.ProtectionState = health.Protection;
+            snapshot.HeartbeatAgeSeconds = observation.HeartbeatAgeSeconds; snapshot.Healthy = health.Healthy;
+        }
         public int RunAction(string action, Action<string> output)
         {
+            if (output == null) throw new ArgumentNullException("output");
             if (preview) { output("界面预览模式不执行连接操作。"); return 1; }
             if (action != "Start" && action != "Stop") throw new ArgumentException("Unknown action.");
             string worker = Path.Combine(root, "support", "ConnectionWorker.exe");
             if (!File.Exists(worker)) throw new IOException("桌面连接组件缺失，请重新安装完整工具包。");
-            using (Process p = new Process())
+            long generation = Interlocked.Increment(ref actionGeneration);
+            int active = 1;
+            try
             {
-                p.StartInfo = new ProcessStartInfo(worker, "--action " + action + " --root " + Quote(root)) {
-                    WorkingDirectory = root, UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true,
-                    RedirectStandardError = true, StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8 };
-                Action<string> write = delegate(string line) {
-                    if (String.IsNullOrWhiteSpace(line)) return;
-                    lock (this) {
-                        output(line);
-                    }
-                };
-                TaskCompletionSource<bool> stdoutDone = new TaskCompletionSource<bool>(), stderrDone = new TaskCompletionSource<bool>();
-                p.OutputDataReceived += delegate(object sender, DataReceivedEventArgs e) { if (e.Data != null) write(e.Data); else stdoutDone.TrySetResult(true); };
-                p.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e) { if (e.Data != null) write(e.Data); else stderrDone.TrySetResult(true); };
-                p.Start(); p.BeginOutputReadLine(); p.BeginErrorReadLine();
-                // Core commands have their own bounded ADB timeouts. Do not kill a half-completed safe Stop.
-                while (!p.WaitForExit(250)) { }
-                // WaitForExit() without a timeout also waits for EOF. A detached descendant must never
-                // keep the UI busy indefinitely merely by inheriting an output handle.
-                Task.WaitAll(new Task[] { stdoutDone.Task, stderrDone.Task }, 1000);
-                try { if (!stdoutDone.Task.IsCompleted) p.CancelOutputRead(); } catch (InvalidOperationException) { }
-                try { if (!stderrDone.Task.IsCompleted) p.CancelErrorRead(); } catch (InvalidOperationException) { }
-                return p.ExitCode;
+                // The worker's individual commands are bounded. Never hard-kill a partial Stop.
+                SharedCommandResult result = ProcessExecution.Run(worker, new string[] { "--action", action, "--root", root }, new SharedCommandOptions {
+                    WorkingDirectory = root, TimeoutMilliseconds = Timeout.Infinite,
+                    ProgressLine = delegate(string line, bool error) {
+                        if (Thread.VolatileRead(ref active) != 0 && Interlocked.Read(ref actionGeneration) == generation && !String.IsNullOrWhiteSpace(line)) output(line);
+                    } });
+                if (result.DroppedProgressLines > 0) output("控制进度较多，已略过部分较早消息；操作结果以最终状态为准。");
+                if (result.OutputIncomplete) output("控制命令已结束，部分进度输出未及时关闭；请核对最终连接状态。");
+                return result.ExitCode;
             }
+            finally { Interlocked.Exchange(ref active, 0); }
         }
         Snapshot Preview()
         {
             previewTick++;
             Snapshot s = new Snapshot { HasSession = true, Healthy = true, SamplingOk = true, TrafficAvailable = true, SessionId = "preview", Phone = "Android · 界面预览",
+                ConnectionState = ConnectionState.Connected, ProtectionState = ProtectionState.Healthy, TelemetryState = TelemetryState.Current,
                 Endpoint = "192.0.2.1:37123", StatusText = "预览 · 已连接", Detail = "界面预览 · 所有数据为模拟数据 · 不执行任何手机或网络操作",
                 TrafficNote = "预览数据。实际模式统计手机 VPN 接口累计，含协议开销，不代表运营商计费。", HeartbeatAgeSeconds = 1.2,
                 DownloadBytes = (ulong)(157286400 + previewTick * 1048576), UploadBytes = 7340032, StartedAt = DateTime.Now.AddMinutes(-18),

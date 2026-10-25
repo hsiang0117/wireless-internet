@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -143,38 +143,25 @@ namespace WirelessInternet
         }
         public static string Quote(string value)
         {
-            if (value.Length > 0 && !Regex.IsMatch(value, "[\\s\"]")) return value;
-            return "\"" + Regex.Replace(Regex.Replace(value, "(\\\\*)\"", "$1$1\\\""), "(\\\\+)$", "$1$1") + "\"";
+            return ProcessExecution.Quote(value);
         }
         public virtual RuntimeCommandResult Run(string executable, string[] arguments, bool allowFailure = false, int timeoutMs = 8000, IDictionary<string, string> environment = null)
         {
-            using (Process process = new Process())
+            SharedCommandResult captured = ProcessExecution.Run(executable, arguments, new SharedCommandOptions {
+                WorkingDirectory = Root, TimeoutMilliseconds = timeoutMs,
+                MaximumOutputCharacters = 65536, MaximumErrorCharacters = 65536,
+                DrainTimeoutMilliseconds = 1000, Environment = environment
+            });
+            if (captured.TimedOut)
             {
-                process.StartInfo = new ProcessStartInfo(executable, String.Join(" ", arguments.Select(Quote))) { UseShellExecute = false, CreateNoWindow = true,
-                    WorkingDirectory = Root, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
-                    StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8 };
-                if (environment != null) foreach (var pair in environment) process.StartInfo.EnvironmentVariables[pair.Key] = pair.Value;
-                process.Start(); process.StandardInput.Close();
-                Task<string> stdout = Task.Factory.StartNew(delegate { return ReadCapped(process.StandardOutput); }, TaskCreationOptions.LongRunning);
-                Task<string> stderr = Task.Factory.StartNew(delegate { return ReadCapped(process.StandardError); }, TaskCreationOptions.LongRunning);
-                if (!process.WaitForExit(timeoutMs))
-                {
-                    try { process.Kill(); process.WaitForExit(1000); } catch { }
-                    if (!allowFailure) throw new IOException("操作超时；仅结束本次命令客户端，请重试。");
-                    return new RuntimeCommandResult { ExitCode = 124, Error = "Command timed out." };
-                }
-                bool drained = Task.WaitAll(new Task[] { stdout, stderr }, 1000);
-                if (!drained) throw new IOException("命令输出未及时结束。");
-                var result = new RuntimeCommandResult { ExitCode = process.ExitCode, Output = stdout.Result, Error = stderr.Result };
-                if (!allowFailure && !result.Success) throw new IOException("操作未完成：" + result.Text);
-                return result;
+                if (!allowFailure) throw new IOException("操作超时；仅结束本次命令客户端，请重试。");
+                return new RuntimeCommandResult { ExitCode = 124, Error = "Command timed out." };
             }
-        }
-        static string ReadCapped(StreamReader reader)
-        {
-            StringBuilder text = new StringBuilder(); char[] block = new char[2048]; int count;
-            while ((count = reader.Read(block, 0, block.Length)) > 0) { int keep = Math.Min(count, 65536 - text.Length); if (keep > 0) text.Append(block, 0, keep); }
-            return text.ToString();
+            if (captured.OutputIncomplete) throw new IOException("命令输出未及时结束。");
+            if (captured.InputFailed) throw new IOException("命令输入未完成。");
+            var result = new RuntimeCommandResult { ExitCode = captured.ExitCode, Output = captured.Output, Error = captured.Error };
+            if (!allowFailure && !result.Success) throw new IOException("操作未完成：" + result.Text);
+            return result;
         }
         public virtual RuntimeCommandResult Adb(string[] arguments, bool allowFailure = false, int timeoutMs = 8000) { return Run(AdbPath, arguments, allowFailure, timeoutMs); }
         public virtual RuntimeCommandResult Gnirehtet(string[] arguments, bool allowFailure = false, int timeoutMs = 8000)
