@@ -1,0 +1,2 @@
+# Keep shell regression fixtures usable in Windows checkouts.
+*.sh text eol=lf

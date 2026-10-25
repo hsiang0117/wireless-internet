@@ -1,4 +1,4 @@
-namespace WirelessInternet
+﻿namespace WirelessInternet
 {
     // Android-side guard source: compiled into the desktop worker, not a distributed script.
     internal static class PhoneGuardSource
@@ -26,7 +26,12 @@ now_seconds() {
     read -r uptime rest < /proc/uptime
     echo ""${uptime%%.*}""
 }
-read_file() { cat ""$1"" </dev/null 2>/dev/null; }
+read_file() {
+    line=
+    while IFS= read -r line || [ -n ""$line"" ]; do
+        printf '%s\n' ""$line""
+    done 2>/dev/null < ""$1""
+}
 write_value() {
     printf '%s\n' ""$2"" > ""$1.tmp"" && mv ""$1.tmp"" ""$1"" </dev/null
 }
@@ -108,7 +113,8 @@ case ""$ACTION"" in
     watch)
         trap '' HUP
         echo ""$$"" > ""$DIR/pid""
-        write_value ""$DIR/watch_tick"" ""$(now_seconds)""
+        last_watch_tick=$(now_seconds)
+        write_value ""$DIR/watch_tick"" ""$last_watch_tick""
         : > ""$DIR/ready""
         while :; do
             if [ -f ""$DIR/cancel"" ]; then exit 0;fi
@@ -118,7 +124,10 @@ case ""$ACTION"" in
             fi
             [ ""$(read_file ""$DIR/result"")"" = ARMED ] || exit 0
             current=$(now_seconds)
-            write_value ""$DIR/watch_tick"" ""$current""
+            # Keep one-second deadline checks; only the liveness-file write is throttled.
+            if [ ""$current"" -lt ""$last_watch_tick"" ] || [ ""$((current - last_watch_tick))"" -ge 5 ]; then
+                write_value ""$DIR/watch_tick"" ""$current"" && last_watch_tick=$current
+            fi
             beat=$(read_file ""$DIR/beat"")
             case ""$beat"" in ''|*[!0-9]*) beat=0;; esac
             if [ ""$current"" -lt ""$beat"" ] || [ ""$((current - beat))"" -ge ""$TIMEOUT"" ]; then

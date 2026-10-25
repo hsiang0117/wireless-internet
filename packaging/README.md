@@ -20,7 +20,7 @@
     -DocumentationDirectory .
 ```
 
-默认只构建和准备 `stage/`，不会运行任何 EXE 或安装器。stage 只能位于此 checkout 的 `stage/` 或 `artifacts/stage/`，拒绝已有未知文件、设备绑定与 reparse point；不递归删除目录。源清单、第三方文件和 fresh config 精确校验后，生成相对路径 SHA-256 manifest。
+默认调用现有 MSBuild 构建并准备 `stage/`，不会启动生成的应用或安装器。stage 只能位于此 checkout 的 `stage/` 或 `artifacts/stage/`，拒绝已有未知文件、设备绑定与 reparse point；不递归删除目录。源清单、第三方文件和 fresh config 精确校验后，生成相对路径 SHA-256 manifest。
 
 需要额外检查本机私有文本时，调用者可传入 `-DisallowedText`；真实值应留在本机调用参数或环境中，不能写入此公共脚本。
 

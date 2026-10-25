@@ -95,6 +95,8 @@ namespace WirelessInternet
         internal bool AutomaticSetupEnabled { get; set; }
         private bool _flushingLogs;
         private string _connectionsSignature = String.Empty;
+        private bool _refreshPhoneSample = true;
+        private bool _phoneStatisticsVisible;
 
         private sealed class PendingLog
         {
@@ -381,6 +383,8 @@ namespace WirelessInternet
             _logTimer = new System.Windows.Forms.Timer();
             _logTimer.Interval = 120;
             _logTimer.Tick += delegate { FlushPendingLogs(); };
+            VisibleChanged += delegate { UpdatePhoneSamplingVisibility(); };
+            Resize += delegate { UpdatePhoneSamplingVisibility(); };
             Shown += delegate
             {
                 RefreshDpiLayout();
@@ -457,9 +461,15 @@ namespace WirelessInternet
         private async void PollOnce()
         {
             if (!_operations.TryBeginPoll()) return;
+            bool foreground = Visible && WindowState != FormWindowState.Minimized;
+            PhoneSamplingMode mode = !foreground ? PhoneSamplingMode.Paused :
+                _refreshPhoneSample ? PhoneSamplingMode.Refresh : PhoneSamplingMode.Foreground;
+            // Consume refresh only after admission. Restoring during an in-flight
+            // poll must leave it pending until a new foreground poll can start.
+            if (foreground) _refreshPhoneSample = false;
             try
             {
-                Task<Snapshot> task = Task.Run(delegate { return _backend.Poll(); });
+                Task<Snapshot> task = Task.Run(delegate { return _backend.Poll(mode); });
                 _operations.TrackPoll(task);
                 Snapshot next = await task;
                 if (!_closing && !_exitRequested && !IsDisposed)
@@ -485,7 +495,20 @@ namespace WirelessInternet
                     }
                 }
             }
-            finally { _operations.CompletePoll(); }
+            finally
+            {
+                _operations.CompletePoll();
+                if (_refreshPhoneSample && Visible && WindowState != FormWindowState.Minimized && !_closing && !_exitRequested) PollOnce();
+            }
+        }
+
+        private void UpdatePhoneSamplingVisibility()
+        {
+            bool foreground = Visible && WindowState != FormWindowState.Minimized;
+            if (foreground == _phoneStatisticsVisible) return;
+            _phoneStatisticsVisible = foreground;
+            if (foreground) _refreshPhoneSample = true;
+            if (IsHandleCreated && !_closing && !_exitRequested) PollOnce();
         }
 
         private async void RunAction(string action)
@@ -584,7 +607,7 @@ namespace WirelessInternet
             if (duration < TimeSpan.Zero) duration = TimeSpan.Zero;
             _lastDuration = duration;
             _durationCard.SetValue(((int)duration.TotalHours).ToString("00", CultureInfo.InvariantCulture) + ":" + duration.Minutes.ToString("00", CultureInfo.InvariantCulture) + ":" + duration.Seconds.ToString("00", CultureInfo.InvariantCulture), value.HasSession ? "当前共享会话" : value.StartedAt.HasValue ? "上次共享已结束" : "等待开始连接");
-            if (value.HasSession) _chart.AddSample(telemetryCurrent ? value.DownloadBytesPerSecond : Double.NaN, telemetryCurrent ? value.UploadBytesPerSecond : Double.NaN);
+            if (value.HasSession && value.IsNewTelemetrySample) _chart.AddSample(telemetryCurrent ? value.DownloadBytesPerSecond : Double.NaN, telemetryCurrent ? value.UploadBytesPerSecond : Double.NaN);
             if (!String.IsNullOrWhiteSpace(value.TrafficNote)) _trafficNote.Text = value.TrafficNote;
             UpdateConnections(value.Connections);
             if (value.Logs != null)

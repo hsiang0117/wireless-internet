@@ -28,6 +28,8 @@ namespace WirelessInternet
     {
         public string SessionId = "", Phone = "", Endpoint = "", StatusText = "未连接", Detail = "", TrafficNote = "";
         public bool HasSession, Healthy, SamplingOk, TrafficAvailable;
+        public bool IsNewTelemetrySample;
+        public double TelemetryAgeSeconds = double.NaN;
         public ConnectionState ConnectionState = ConnectionState.Disconnected;
         public ProtectionState ProtectionState = ProtectionState.Inactive;
         public TelemetryState TelemetryState = TelemetryState.Unavailable;
@@ -74,11 +76,36 @@ namespace WirelessInternet
         MemoryLogBatch ReadLogs(string pipeName, long after);
         long Timestamp { get; }
     }
+    public enum PhoneSamplingMode { Immediate, Foreground, Paused, Refresh }
+
+    // The injected source supplies the monotonic clock. A normal three-second
+    // GUI interval may reuse a recent average rate for at most four seconds;
+    // an older value, a failed read or a pause is never presented as current speed.
+    public sealed class PhoneSamplingPolicy
+    {
+        public readonly double IntervalSeconds, MaximumRateAgeSeconds;
+        public PhoneSamplingPolicy() : this(3, 4) { }
+        public PhoneSamplingPolicy(double intervalSeconds, double maximumRateAgeSeconds)
+        {
+            if (Double.IsNaN(intervalSeconds) || Double.IsInfinity(intervalSeconds) || intervalSeconds <= 0)
+                throw new ArgumentOutOfRangeException("intervalSeconds");
+            if (Double.IsNaN(maximumRateAgeSeconds) || Double.IsInfinity(maximumRateAgeSeconds) || maximumRateAgeSeconds < intervalSeconds)
+                throw new ArgumentOutOfRangeException("maximumRateAgeSeconds");
+            IntervalSeconds = intervalSeconds; MaximumRateAgeSeconds = maximumRateAgeSeconds;
+        }
+        public bool ShouldQuery(PhoneSamplingMode mode, bool attempted, double secondsSinceAttempt)
+        {
+            return mode != PhoneSamplingMode.Paused && (mode == PhoneSamplingMode.Immediate || mode == PhoneSamplingMode.Refresh ||
+                !attempted || secondsSinceAttempt < 0 || secondsSinceAttempt >= IntervalSeconds);
+        }
+        public bool RateIsFresh(double age) { return age >= 0 && age <= MaximumRateAgeSeconds; }
+    }
     public sealed class Backend : IDisposable
     {
         readonly string root;
         readonly bool preview;
         readonly ISessionObservationSource observations;
+        readonly PhoneSamplingPolicy samplingPolicy;
         string logPipe = "";
         long logCursor, nextLogSequence;
         bool logUnavailable;
@@ -87,6 +114,10 @@ namespace WirelessInternet
         ulong lastDown, lastUp, savedDown, savedUp;
         double lastPhoneUptime;
         long lastSampleQpc;
+        long lastAttemptQpc;
+        bool hasAttempt, hasSampleClock, hasRateBaseline, samplingPaused;
+        string samplingEndpoint = "", samplingIdentity = "";
+        double savedDownRate = double.NaN, savedUpRate = double.NaN;
         DateTime? savedStart;
         bool savedTrafficAvailable;
         int sampleFailures, stateFailures;
@@ -95,11 +126,14 @@ namespace WirelessInternet
         long actionGeneration;
 
         public Backend(string root, bool preview) : this(root, preview, null) { }
-        public Backend(string root, bool preview, ISessionObservationSource observations)
+        public Backend(string root, bool preview, ISessionObservationSource observations) : this(root, preview, observations, new PhoneSamplingPolicy()) { }
+        public Backend(string root, bool preview, ISessionObservationSource observations, PhoneSamplingPolicy samplingPolicy)
         {
+            if (samplingPolicy == null) throw new ArgumentNullException("samplingPolicy");
             this.root = Path.GetFullPath(root);
             this.preview = preview;
             this.observations = observations ?? new SystemSessionObservationSource(this.root);
+            this.samplingPolicy = samplingPolicy;
         }
         public static string Quote(string value)
         {
@@ -244,12 +278,50 @@ namespace WirelessInternet
                 logUnavailable = true;
             }
         }
-        public Snapshot Poll()
+        public Snapshot Poll() { return Poll(PhoneSamplingMode.Immediate); }
+
+        void ResetPhoneSampling(bool clearTraffic)
         {
-            if (preview) return Preview();
+            counterKey = ""; lastSampleQpc = lastAttemptQpc = 0;
+            hasAttempt = hasSampleClock = hasRateBaseline = samplingPaused = false;
+            sampleFailures = 0; lastSampleError = "";
+            savedDownRate = savedUpRate = double.NaN;
+            if (clearTraffic) { savedDown = savedUp = 0; savedStart = null; savedTrafficAvailable = false; }
+        }
+        void ReusePhoneTelemetry(Snapshot snapshot, PhoneSamplingMode mode, long now)
+        {
+            double age = hasSampleClock ? (now - lastSampleQpc) / (double)Stopwatch.Frequency : double.NaN;
+            snapshot.TelemetryAgeSeconds = age >= 0 ? age : double.NaN;
+            bool current = mode != PhoneSamplingMode.Paused && sampleFailures == 0 && savedTrafficAvailable && samplingPolicy.RateIsFresh(age);
+            snapshot.SamplingOk = current;
+            snapshot.TelemetryState = current ? TelemetryState.Current : savedTrafficAvailable ? TelemetryState.Stale : TelemetryState.Unavailable;
+            if (current) { snapshot.DownloadBytesPerSecond = savedDownRate; snapshot.UploadBytesPerSecond = savedUpRate; }
+            if (mode == PhoneSamplingMode.Paused)
+                snapshot.TrafficNote = "手机统计已暂停：窗口恢复后重新采样；保留最后流量，速度显示 —。共享与失联保护继续运行。";
+            else if (sampleFailures > 0)
+                snapshot.TrafficNote = "统计采样暂不可用：保留最后流量，速度显示 —。连接与保护状态分别判断。";
+            else if (!current && savedTrafficAvailable)
+                snapshot.TrafficNote = "最近统计已过期：保留最后流量，速度显示 —；等待下一次有效采样。";
+        }
+        string ActiveTrafficNote()
+        {
+            return "手机 VPN 接口累计（含协议开销），不代表运营商计费；前台约 " +
+                samplingPolicy.IntervalSeconds.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) +
+                " 秒更新，速度为最近采样间隔平均值。";
+        }
+        public Snapshot Poll(PhoneSamplingMode mode)
+        {
+            if (!Enum.IsDefined(typeof(PhoneSamplingMode), mode)) throw new ArgumentOutOfRangeException("mode");
+            if (preview)
+            {
+                Snapshot demo = Preview();
+                demo.IsNewTelemetrySample = mode != PhoneSamplingMode.Paused;
+                if (mode == PhoneSamplingMode.Paused) { demo.SamplingOk = false; demo.TelemetryState = TelemetryState.Stale; demo.DownloadBytesPerSecond = demo.UploadBytesPerSecond = double.NaN; }
+                return demo;
+            }
             Snapshot snap = new Snapshot { DownloadBytes = savedDown, UploadBytes = savedUp, StartedAt = savedStart, TrafficAvailable = savedTrafficAvailable,
                 TelemetryState = savedTrafficAvailable ? TelemetryState.Stale : TelemetryState.Unavailable,
-                TrafficNote = "手机 VPN 接口累计（含协议开销），不代表运营商计费；速度约每秒采样。" };
+                TrafficNote = ActiveTrafficNote() };
             SessionObservation observation;
             try { observation = observations.ReadSession(); stateFailures = 0; }
             catch (Exception e)
@@ -272,8 +344,7 @@ namespace WirelessInternet
                     Add(snap, "状态", "共享会话已结束，已停止网速采样。", "INFO");
                 }
                 logPipe = ""; logCursor = 0;
-                counterKey = "";
-                lastSampleQpc = 0;
+                ResetPhoneSampling(false); samplingEndpoint = samplingIdentity = "";
                 lastStatus = snap.StatusText;
                 lastSnapshot = snap;
                 return snap;
@@ -282,13 +353,19 @@ namespace WirelessInternet
             if (session != state.ProtectionSessionId)
             {
                 session = state.ProtectionSessionId;
-                counterKey = ""; lastSampleQpc = 0; sampleFailures = 0;
-                savedDown = savedUp = 0; savedStart = null;
-                savedTrafficAvailable = snap.TrafficAvailable = false;
+                ResetPhoneSampling(true);
+                snap.TrafficAvailable = false;
                 snap.TelemetryState = TelemetryState.Unavailable;
                 snap.DownloadBytes = snap.UploadBytes = 0; snap.StartedAt = null;
                 lastConnections.Clear(); logPipe = ""; logCursor = 0;
                 Add(snap, "会话", "已接管受保护的无线共享会话 " + session.Substring(0, 8) + "；关闭本窗口后仍可继续共享。", "INFO");
+            }
+            if (samplingEndpoint != state.WirelessSerial || samplingIdentity != state.PhoneIdentity)
+            {
+                ResetPhoneSampling(true);
+                samplingEndpoint = state.WirelessSerial; samplingIdentity = state.PhoneIdentity;
+                snap.TrafficAvailable = false; snap.DownloadBytes = snap.UploadBytes = 0; snap.StartedAt = null;
+                snap.TelemetryState = TelemetryState.Unavailable;
             }
             snap.HasSession = true; snap.SessionId = session; snap.Phone = state.PhoneIdentity; snap.Endpoint = state.WirelessSerial;
             snap.ProtectionTimeoutSeconds = state.ProtectionTimeoutSeconds >= 15 && state.ProtectionTimeoutSeconds <= 120 ? state.ProtectionTimeoutSeconds : 30;
@@ -311,20 +388,39 @@ namespace WirelessInternet
                 }
                 catch (Exception e) { Add(snap, "TCP 采样", "暂时无法读取连接表：" + e.Message, "WARN"); }
             }
-            if (relayOk)
+            long sampleClock = observations.Timestamp;
+            bool resume = samplingPaused && mode != PhoneSamplingMode.Paused;
+            if (mode == PhoneSamplingMode.Paused || mode == PhoneSamplingMode.Refresh || resume)
             {
+                hasRateBaseline = false; savedDownRate = savedUpRate = double.NaN;
+            }
+            samplingPaused = mode == PhoneSamplingMode.Paused;
+            double sinceAttempt = (sampleClock - lastAttemptQpc) / (double)Stopwatch.Frequency;
+            bool queryPhone = relayOk && samplingPolicy.ShouldQuery(resume ? PhoneSamplingMode.Refresh : mode, hasAttempt, sinceAttempt);
+            ReusePhoneTelemetry(snap, mode, sampleClock);
+            if (!relayOk)
+            {
+                hasRateBaseline = hasAttempt = false; savedDownRate = savedUpRate = double.NaN;
+                snap.SamplingOk = false; snap.DownloadBytesPerSecond = snap.UploadBytesPerSecond = double.NaN;
+                snap.TelemetryState = snap.TrafficAvailable ? TelemetryState.Stale : TelemetryState.Unavailable;
+                if (mode != PhoneSamplingMode.Paused) snap.TrafficNote = "共享链路待确认：保留最后流量，速度显示 —。";
+            }
+            if (queryPhone)
+            {
+                hasAttempt = true; lastAttemptQpc = sampleClock;
+                snap.DownloadBytesPerSecond = snap.UploadBytesPerSecond = double.NaN;
                 try
                 {
                     PhoneCounters c = observations.ReadPhone(state);
                     SessionObservation after = observations.ReadSession();
-                    if (after == null || after.State.ProtectionSessionId != session || after.State.WirelessSerial != state.WirelessSerial)
+                    if (after == null || after.State.ProtectionSessionId != session || after.State.WirelessSerial != state.WirelessSerial || after.State.PhoneIdentity != state.PhoneIdentity)
                     {
                         snap.ConnectionState = ConnectionState.Unknown; snap.ProtectionState = ProtectionState.Unknown; snap.Healthy = false;
                         throw new IOException("会话已切换，丢弃旧样本。");
                     }
                     ApplyHealth(snap, after, true);
                     long now = observations.Timestamp;
-                    bool continuous = counterKey == c.Key && lastSampleQpc > 0 && c.Uptime >= lastPhoneUptime &&
+                    bool continuous = counterKey == c.Key && hasRateBaseline && c.Uptime >= lastPhoneUptime &&
                         c.Download >= lastDown && c.Upload >= lastUp;
                     double seconds = (now - lastSampleQpc) / (double)Stopwatch.Frequency;
                     if (continuous && sampleFailures == 0 && seconds > 0 && seconds < 10)
@@ -332,13 +428,18 @@ namespace WirelessInternet
                         snap.DownloadBytesPerSecond = (c.Download - lastDown) / seconds;
                         snap.UploadBytesPerSecond = (c.Upload - lastUp) / seconds;
                     }
-                    if (counterKey != "" && !continuous) Add(snap, "流量", "VPN 接口或计数已重建，流量与速度基线已重新读取。", "WARN");
+                    if (counterKey != "" && (counterKey != c.Key || c.Uptime < lastPhoneUptime || c.Download < lastDown || c.Upload < lastUp))
+                        Add(snap, "流量", "VPN 接口或计数已重建，流量与速度基线已重新读取。", "WARN");
                     savedDown = snap.DownloadBytes = lastDown = c.Download;
                     savedUp = snap.UploadBytes = lastUp = c.Upload;
                     savedStart = snap.StartedAt = c.StartedAt;
                     counterKey = c.Key; lastSampleQpc = now; lastPhoneUptime = c.Uptime;
+                    hasSampleClock = hasRateBaseline = true;
+                    savedDownRate = snap.DownloadBytesPerSecond; savedUpRate = snap.UploadBytesPerSecond;
+                    snap.IsNewTelemetrySample = true; snap.TelemetryAgeSeconds = 0;
                     snap.SamplingOk = true;
                     snap.TelemetryState = TelemetryState.Current;
+                    snap.TrafficNote = ActiveTrafficNote();
                     savedTrafficAvailable = snap.TrafficAvailable = true;
                     if (sampleFailures > 0) Add(snap, "流量", "手机采样已恢复；重新建立速度基线。", "INFO");
                     sampleFailures = 0; lastSampleError = "";
@@ -346,6 +447,8 @@ namespace WirelessInternet
                 catch (Exception e)
                 {
                     sampleFailures++;
+                    hasRateBaseline = false; savedDownRate = savedUpRate = double.NaN;
+                    snap.SamplingOk = false; snap.DownloadBytesPerSecond = snap.UploadBytesPerSecond = double.NaN;
                     snap.TelemetryState = snap.TrafficAvailable ? TelemetryState.Stale : TelemetryState.Unavailable;
                     if (lastSampleError != e.Message) { Add(snap, "手机采样", e.Message, "WARN"); lastSampleError = e.Message; }
                     snap.TrafficNote = "统计采样暂不可用：保留最后流量，速度显示 —。连接与保护状态分别判断。";
@@ -398,7 +501,7 @@ namespace WirelessInternet
         Snapshot Preview()
         {
             previewTick++;
-            Snapshot s = new Snapshot { HasSession = true, Healthy = true, SamplingOk = true, TrafficAvailable = true, SessionId = "preview", Phone = "Android · 界面预览",
+            Snapshot s = new Snapshot { HasSession = true, Healthy = true, SamplingOk = true, TrafficAvailable = true, IsNewTelemetrySample = true, TelemetryAgeSeconds = 0, SessionId = "preview", Phone = "Android · 界面预览",
                 ConnectionState = ConnectionState.Connected, ProtectionState = ProtectionState.Healthy, TelemetryState = TelemetryState.Current,
                 Endpoint = "192.0.2.1:37123", StatusText = "预览 · 已连接", Detail = "界面预览 · 所有数据为模拟数据 · 不执行任何手机或网络操作",
                 TrafficNote = "预览数据。实际模式统计手机 VPN 接口累计，含协议开销，不代表运营商计费。", HeartbeatAgeSeconds = 1.2,

@@ -94,10 +94,13 @@ try {
     $backend = Compile-Check 'BackendStatusChecks' @('Backend.cs', 'MemoryLog.cs', 'ProcessExecution.cs', 'SessionStatus.cs') @('System.Core.dll', 'System.Web.Extensions.dll') 'BackendStatusChecks.cs'
     Run-Check 'Backend' $backend @() '^TOTAL (\d+) PASS' 29
 
+    $sampling = Compile-Check 'PhoneSamplingChecks' @('Backend.cs', 'MemoryLog.cs', 'ProcessExecution.cs', 'SessionStatus.cs') @('System.Core.dll', 'System.Web.Extensions.dll') 'PhoneSamplingChecks.cs'
+    Run-Check 'Sampling' $sampling @($runRoot) '^PASS (\d+) sampling checks' 26
+
     $coordinator = Compile-Check 'CoordinatorChecks' @('UiOperationCoordinator.cs') @('System.Core.dll', 'System.Web.Extensions.dll') 'CoordinatorChecks.cs'
     Run-Check 'Coordinator' $coordinator @((Join-Path $runRoot 'coordinator-results.json')) '^PASS (\d+) coordinator checks' 39
 }
 finally { Pop-Location }
 
-Write-Host ('PASS all 5 offline suites: ' + (($summary | Measure-Object -Property Assertions -Sum).Sum) + ' assertions.')
+Write-Host ('PASS all 6 offline suites: ' + (($summary | Measure-Object -Property Assertions -Sum).Sum) + ' assertions.')
 Write-Host ('Generated files are isolated under: ' + $runRoot)
