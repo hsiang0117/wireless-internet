@@ -54,6 +54,7 @@
     <Compile Include="AppForm.cs" />
     <Compile Include="SetupForm.cs" />
     <Compile Include="SetupBackend.cs" />
+    <Compile Include="AndroidProtocol.cs" />
     <Compile Include="UiDpi.cs" />
     <Compile Include="ProcessExecution.cs" />
     <Compile Include="SessionStatus.cs" />

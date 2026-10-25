@@ -17,7 +17,8 @@ if (-not (Test-Path -LiteralPath $source -PathType Container)) {
 }
 $testRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 $requiredSources = @('NativeNetwork.cs', 'RuntimeCommon.cs', 'WatchdogController.cs', 'PhoneGuardSource.cs',
-    'ProcessExecution.cs', 'SetupBackend.cs', 'Backend.cs', 'MemoryLog.cs', 'SessionStatus.cs', 'UiOperationCoordinator.cs')
+    'ProcessExecution.cs', 'SetupBackend.cs', 'Backend.cs', 'MemoryLog.cs', 'SessionStatus.cs', 'UiOperationCoordinator.cs',
+    'RuntimeSessionStore.cs', 'OwnedProcessManager.cs', 'AndroidProtocol.cs', 'AndroidDeviceClient.cs', 'ConnectionController.cs', 'ConnectionOperation.cs')
 foreach ($name in $requiredSources) {
     if (-not (Test-Path -LiteralPath (Join-Path $source $name) -PathType Leaf)) {
         throw ('A required source file is missing: ' + $name)
@@ -43,12 +44,14 @@ function Invoke-CheckedNative([string]$Executable, [string[]]$Arguments, [string
     return $lines
 }
 
-function Compile-Check([string]$Name, [string[]]$Sources, [string[]]$References, [string]$TestFile) {
+function Compile-Check([string]$Name, [string[]]$Sources, [string[]]$References, [string]$TestFile, [string[]]$ExtraTests = @(), [string]$EntryPoint = '') {
     $executable = Join-Path $runRoot ($Name + '.exe')
     $arguments = @('/nologo', '/langversion:5', '/platform:x64', '/target:exe', '/optimize+', '/utf8output', '/codepage:65001', ('/out:' + $executable))
     foreach ($reference in $References) { $arguments += ('/r:' + $reference) }
+    if ($EntryPoint) { $arguments += ('/main:' + $EntryPoint) }
     foreach ($name in $Sources) { $arguments += (Join-Path $source $name) }
     $arguments += (Join-Path $testRoot $TestFile)
+    foreach ($name in $ExtraTests) { $arguments += (Join-Path $testRoot $name) }
     $messages = @(Invoke-CheckedNative $compiler $arguments ('Compile ' + $Name))
     foreach ($message in $messages) { Write-Host $message }
     return $executable
@@ -78,7 +81,7 @@ function Run-Check([string]$Name, [string]$Executable, [string[]]$Arguments, [st
 }
 
 $coreReferences = @('System.Core.dll', 'System.Management.dll', 'System.Web.Extensions.dll')
-$coreSources = @('RuntimeCommon.cs', 'NativeNetwork.cs', 'PhoneGuardSource.cs', 'ProcessExecution.cs')
+$coreSources = @('RuntimeCommon.cs', 'NativeNetwork.cs', 'PhoneGuardSource.cs', 'ProcessExecution.cs', 'RuntimeSessionStore.cs', 'OwnedProcessManager.cs', 'AndroidProtocol.cs')
 Push-Location $runRoot
 try {
     $network = Compile-Check 'NativeNetworkTunRegression' @('NativeNetwork.cs') @('System.Core.dll', 'System.Management.dll') 'NativeNetworkTunRegression.cs'
@@ -99,8 +102,20 @@ try {
 
     $coordinator = Compile-Check 'CoordinatorChecks' @('UiOperationCoordinator.cs') @('System.Core.dll', 'System.Web.Extensions.dll') 'CoordinatorChecks.cs'
     Run-Check 'Coordinator' $coordinator @((Join-Path $runRoot 'coordinator-results.json')) '^PASS (\d+) coordinator checks' 39
+
+    $runtime = Compile-Check 'RuntimeServiceChecks' $coreSources $coreReferences 'RuntimeServiceChecks.cs'
+    Run-Check 'RuntimeServices' $runtime @((Join-Path $runRoot 'runtime-services')) '^PASS (\d+) runtime service checks' 51
+
+    $android = Compile-Check 'AndroidClientChecks' ($coreSources + @('AndroidDeviceClient.cs', 'SetupBackend.cs')) $coreReferences 'AndroidClientChecks.cs'
+    Run-Check 'Android' $android @() '^PASS (\d+) Android client/protocol checks' 140
+
+    $lifecycle = Compile-Check 'ConnectionLifecycleChecks' ($coreSources + @('AndroidDeviceClient.cs', 'ConnectionController.cs', 'ConnectionOperation.cs')) $coreReferences 'ConnectionLifecycleChecks.cs'
+    Run-Check 'Lifecycle' $lifecycle @((Join-Path $runRoot 'lifecycle-results.json')) '^PASS (\d+) connection lifecycle assertions' 264
+
+    $resultChecks = Compile-Check 'ConnectionResultChecks' ($coreSources + @('AndroidDeviceClient.cs', 'ConnectionController.cs', 'ConnectionOperation.cs')) $coreReferences 'ConnectionResultChecks.cs' @('ConnectionLifecycleChecks.cs') 'ConnectionResultChecks'
+    Run-Check 'ConnectionResults' $resultChecks @((Join-Path $runRoot 'connection-results.json')) '^PASS (\d+) structured connection result assertions' 174
 }
 finally { Pop-Location }
 
-Write-Host ('PASS all 6 offline suites: ' + (($summary | Measure-Object -Property Assertions -Sum).Sum) + ' assertions.')
+Write-Host ('PASS all 10 offline suites: ' + (($summary | Measure-Object -Property Assertions -Sum).Sum) + ' assertions.')
 Write-Host ('Generated files are isolated under: ' + $runRoot)

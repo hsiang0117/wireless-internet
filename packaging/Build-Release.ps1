@@ -78,7 +78,7 @@ if(-not $SkipBuild){
     $null=New-Item -ItemType Directory -Path $binaryDirectory -Force
     $icon=Join-Path $DependencyDirectory 'support\wireless.ico'
     if(Test-Path -LiteralPath $icon){Copy-Item -LiteralPath $icon -Destination (Join-Path $binaryDirectory 'wireless.ico') -Force}
-    & $MSBuildPath (Join-Path $SourceDirectory 'WirelessInternet.sln') /nologo /m:1 /nr:false /t:Build /v:minimal /p:Configuration=Release /p:Platform=x64 /p:UseSharedCompilation=false
+    & $MSBuildPath (Join-Path $SourceDirectory 'WirelessInternet.sln') /nologo /m:1 /nr:false /t:Rebuild /v:minimal /p:Configuration=Release /p:Platform=x64 /p:UseSharedCompilation=false
     if($LASTEXITCODE -ne 0){throw 'MSBuild release compilation failed.'}
 }
 CopyPayload (Join-Path $binaryDirectory 'WirelessInternet.exe') 'WirelessInternet.exe'

@@ -4,6 +4,10 @@
 
 `release-files.json` 是显式运行包白名单：源文件、第三方依赖和固定运行文件分开枚举。实际数量由清单计算，不在检查脚本中重复硬编码。`App.config`、三个 csproj、solution、README、LICENSE、BUILD.md 和自写 THIRD-PARTY.md 均包含在新包中；第三方 NOTICE/LICENSE 保持原文。
 
+1.6.0 将连接生命周期分为明确阶段，并增加会话存储、进程管理、手机命令和纯协议解析组件；这些源文件仍分别编入原有 EXE，不增加运行时共享 DLL。GUI 只共用纯 `AndroidProtocol`，worker 编入其余生命周期服务。发布前应核对项目的 Compile 清单与 `SourceFiles` 同步，不能只复制新的 worker 二进制而漏掉可重编所需的源码。
+
+本轮打包保留原有操作锁、默认 30 秒失联保护和 1.5.1 的省电采样行为；版本升级沿用既有绑定格式和会话协议。发布输入必须是冻结源码、已核验依赖和当前文档，不能从活动安装目录整体复制。
+
 ## 构建与 staging
 
 `Build-Release.ps1` 的三个输入目录互相独立：
@@ -20,7 +24,7 @@
     -DocumentationDirectory .
 ```
 
-默认调用现有 MSBuild 构建并准备 `stage/`，不会启动生成的应用或安装器。stage 只能位于此 checkout 的 `stage/` 或 `artifacts/stage/`，拒绝已有未知文件、设备绑定与 reparse point；不递归删除目录。源清单、第三方文件和 fresh config 精确校验后，生成相对路径 SHA-256 manifest。
+默认调用现有 MSBuild 的 Release `Rebuild` 并准备 `stage/`，确保新增图标等编译资源后不会沿用较早的增量构建结果；不会启动生成的应用或安装器。stage 只能位于此 checkout 的 `stage/` 或 `artifacts/stage/`，拒绝已有未知文件、设备绑定与 reparse point；不递归删除目录。源清单、第三方文件和 fresh config 精确校验后，生成相对路径 SHA-256 manifest。
 
 需要额外检查本机私有文本时，调用者可传入 `-DisallowedText`；真实值应留在本机调用参数或环境中，不能写入此公共脚本。
 

@@ -46,8 +46,13 @@
   <ItemGroup>
     <Compile Include="WorkerHost.cs" />
     <Compile Include="RuntimeCommon.cs" />
+    <Compile Include="RuntimeSessionStore.cs" />
+    <Compile Include="OwnedProcessManager.cs" />
+    <Compile Include="AndroidDeviceClient.cs" />
+    <Compile Include="AndroidProtocol.cs" />
     <Compile Include="NativeNetwork.cs" />
     <Compile Include="ConnectionController.cs" />
+    <Compile Include="ConnectionOperation.cs" />
     <Compile Include="WatchdogController.cs" />
     <Compile Include="PhoneGuardSource.cs" />
     <Compile Include="ProcessExecution.cs" />

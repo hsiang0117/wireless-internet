@@ -213,12 +213,9 @@ namespace WirelessInternet
 
         static bool ValidSerial(string serial, string gateway)
         {
-            Match match = Regex.Match(serial ?? String.Empty, "^(?<ip>[0-9]{1,3}(?:[.][0-9]{1,3}){3}):(?<port>[0-9]{1,5})$");
             IPAddress address;
             int port;
-            if (!match.Success || !IPAddress.TryParse(match.Groups["ip"].Value, out address) ||
-                address.AddressFamily != AddressFamily.InterNetwork ||
-                !Int32.TryParse(match.Groups["port"].Value, out port) || port < 1 || port > 65535) return false;
+            if (!AndroidProtocol.TryParseIpv4Endpoint(serial, out address, out port)) return false;
             byte first = address.GetAddressBytes()[0];
             if (first == 0 || first == 127 || first >= 224) return false;
             return String.IsNullOrEmpty(gateway) || String.Equals(address.ToString(), gateway, StringComparison.Ordinal);
@@ -255,15 +252,7 @@ namespace WirelessInternet
         string FindNativeSerial(string gateway, string identity, string fallback)
         {
             RuntimeCommandResult discovered = Adb(new string[] { "mdns", "services" });
-            string pattern = "^adb-" + Regex.Escape(identity) + "-\\S+[ \\t]+_adb-tls-connect[.]_tcp[.]?[ \\t]+[0-9.]+:(?<port>[0-9]+)[ \\t]*\\r?$";
-            HashSet<int> ports = new HashSet<int>();
-            foreach (string line in discovered.Lines ?? new string[0])
-            {
-                Match service = Regex.Match(line, pattern);
-                int port;
-                if (service.Success && Int32.TryParse(service.Groups["port"].Value, out port) && port >= 1 && port <= 65535)
-                    ports.Add(port);
-            }
+            HashSet<int> ports = AndroidProtocol.NativeTlsPorts(discovered.Lines, identity);
             if (discovered.Success && ports.Count == 1)
                 foreach (int port in ports) return gateway + ":" + port.ToString(CultureInfo.InvariantCulture);
             if (ports.Count > 1) throw new IOException("Multiple native debugging ports were discovered for the tracked phone.");
@@ -299,8 +288,7 @@ namespace WirelessInternet
 
         static bool PhoneVpnIsConnected(string text)
         {
-            return Regex.IsMatch(text ?? String.Empty,
-                "(?m)^  NetworkAgentInfo\\{network\\{\\d+\\}[^\\r\\n]*ni\\{VPN CONNECTED extra: VPN:com[.]genymobile[.]gnirehtet\\}");
+            return AndroidProtocol.PhoneVpnConnected(text);
         }
 
         bool StopExpiredSession()

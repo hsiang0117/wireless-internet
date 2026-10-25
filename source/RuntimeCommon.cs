@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -55,6 +55,8 @@ namespace WirelessInternet
     {
         public const string CoreMutexName = "Local\\CodexUsbInternetWireless";
         public readonly string Root, AdbPath, RelayPath, WorkerPath, StatePath, RelayHostPath, ApkPath;
+        readonly RuntimeSessionStore sessions;
+        readonly OwnedProcessManager processes;
         public RuntimeContext(string root)
         {
             Root = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar);
@@ -64,6 +66,8 @@ namespace WirelessInternet
             RelayHostPath = Path.Combine(Root, "support", "RelayLogHost.exe");
             StatePath = Path.Combine(Root, "state", "wireless-session.json");
             ApkPath = Path.Combine(Root, "gnirehtet-rust-win64", "gnirehtet.apk");
+            sessions = new RuntimeSessionStore(Root, StatePath);
+            processes = new OwnedProcessManager(Root, RelayPath, WorkerPath);
         }
         public virtual long Timestamp { get { return Stopwatch.GetTimestamp(); } }
         public virtual double ElapsedSeconds(long since) { return (Timestamp - since) / (double)Stopwatch.Frequency; }
@@ -82,65 +86,13 @@ namespace WirelessInternet
         }
         public virtual IDisposable TryEnterCoreMutex() { try { return EnterCoreMutex(0); } catch (TimeoutException) { return null; } }
         public static string GetString(IDictionary<string, object> data, string key)
-        {
-            object value; return data != null && data.TryGetValue(key, out value) && value != null ? Convert.ToString(value, CultureInfo.InvariantCulture) : "";
-        }
+        { return RuntimeSessionStore.GetString(data, key); }
         public static int GetInt(IDictionary<string, object> data, string key, int fallback)
-        {
-            string text = GetString(data, key); int value;
-            if (text.Length == 0) return fallback;
-            if (!Int32.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out value)) throw new IOException("配置中的 " + key + " 无效。");
-            return value;
-        }
-        public virtual Dictionary<string, object> ReadConfig()
-        {
-            var data = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(ReadShared(Path.Combine(Root, "wireless-config.json")));
-            if (data == null || GetString(data, "Transport") != "NativeTls") throw new IOException("请先完成原生无线调试的手机配置。");
-            string identity = GetString(data, "PhoneIdentity");
-            if (!Regex.IsMatch(identity, "^[A-Za-z0-9_-]{1,100}$")) throw new IOException("请点击“更换/绑定手机”，先配对、检测并保存手机。");
-            int timeout = GetInt(data, "DisconnectTimeoutSeconds", 30);
-            if (timeout < 15 || timeout > 120) throw new IOException("失联保护时间必须为 15–120 秒。");
-            return data;
-        }
-        public virtual RuntimeState ReadState()
-        {
-            string text;
-            try { text = ReadShared(StatePath); } catch (FileNotFoundException) { return null; } catch (DirectoryNotFoundException) { return null; }
-            JavaScriptSerializer json = new JavaScriptSerializer();
-            RuntimeState state = json.Deserialize<RuntimeState>(text);
-            if (state == null || state.Transport != "NativeTls" || !Regex.IsMatch(state.PhoneIdentity ?? "", "^[A-Za-z0-9_-]{1,100}$") ||
-                !ValidSerial(state.WirelessSerial) || !ProtectionValid(state)) throw new IOException("运行会话格式无效，未修改进程或手机状态。");
-            state.RawFields = json.Deserialize<Dictionary<string, object>>(text);
-            return state;
-        }
-        public virtual void WriteState(RuntimeState state)
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(StatePath));
-            JavaScriptSerializer json = new JavaScriptSerializer();
-            var data = json.Deserialize<Dictionary<string, object>>(json.Serialize(state));
-            if (state.RawFields != null) foreach (var entry in state.RawFields) if (!data.ContainsKey(entry.Key)) data.Add(entry.Key, entry.Value);
-            string temporary = StatePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
-            try
-            {
-                File.WriteAllText(temporary, json.Serialize(data), new UTF8Encoding(false));
-                if (File.Exists(StatePath)) File.Replace(temporary, StatePath, null); else File.Move(temporary, StatePath);
-            }
-            finally { try { File.Delete(temporary); } catch { } }
-        }
-        public virtual void DeleteStateIfToken(string token)
-        {
-            RuntimeState current = ReadState();
-            if (current != null && String.Equals(current.ProtectionSessionId, token, StringComparison.Ordinal)) File.Delete(StatePath);
-        }
-        static string ReadShared(string path)
-        {
-            using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
-            using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))
-            {
-                if (stream.Length > 262144) throw new IOException("运行配置或会话文件过大。");
-                return reader.ReadToEnd();
-            }
-        }
+        { return RuntimeSessionStore.GetInt(data, key, fallback); }
+        public virtual Dictionary<string, object> ReadConfig() { return sessions.ReadConfig(); }
+        public virtual RuntimeState ReadState() { return sessions.ReadState(ValidSerial, ProtectionValid); }
+        public virtual void WriteState(RuntimeState state) { sessions.WriteState(state); }
+        public virtual void DeleteStateIfToken(string token) { sessions.DeleteStateIfToken(token, ReadState); }
         public static string Quote(string value)
         {
             return ProcessExecution.Quote(value);
@@ -190,7 +142,7 @@ namespace WirelessInternet
         public virtual bool PhoneVpnConnected(string serial)
         {
             RuntimeCommandResult result = Adb(new string[] { "-s", serial, "shell", "dumpsys", "connectivity" });
-            return Regex.IsMatch(result.Text, @"(?m)^  NetworkAgentInfo\{network\{\d+\}[^\r\n]*ni\{VPN CONNECTED extra: VPN:com\.genymobile\.gnirehtet\}");
+            return AndroidProtocol.PhoneVpnConnected(result.Text);
         }
         public virtual bool MonitorHeartbeatFresh(RuntimeState state)
         {
@@ -198,55 +150,14 @@ namespace WirelessInternet
             double age = ElapsedSeconds(stamp); return age >= 0 && age <= 12;
         }
         public static Process GetOwnedProcess(int pid, string ticks, string expectedPath, bool pinHandle, bool rejectSelf)
-        {
-            if (pid <= 0) return null;
-            Process process;
-            try { process = Process.GetProcessById(pid); } catch (ArgumentException) { return null; }
-            try
-            {
-                // Pin before checking identity; a recycled PID can never retarget a subsequent Kill.
-                if (pinHandle) { IntPtr held = process.Handle; }
-                if (process.HasExited) { process.Dispose(); return null; }
-                if (rejectSelf && pid == Process.GetCurrentProcess().Id) throw new IOException("拒绝结束当前控制进程。");
-                if (process.StartTime.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture) != ticks ||
-                    !String.Equals(Path.GetFullPath(process.MainModule.FileName), Path.GetFullPath(expectedPath), StringComparison.OrdinalIgnoreCase))
-                    throw new IOException("已记录进程的身份发生变化，未结束其他进程。");
-                return process;
-            }
-            catch { process.Dispose(); throw; }
-        }
+        { return OwnedProcessManager.GetOwnedProcess(pid, ticks, expectedPath, pinHandle, rejectSelf); }
         public virtual Process GetOwnedRelay(RuntimeState state, bool pinHandle = false)
-        {
-            if (state == null) return null;
-            if (!String.Equals(Path.GetFullPath(state.RelayPath ?? ""), RelayPath, StringComparison.OrdinalIgnoreCase)) throw new IOException("中继路径与当前工具不符。");
-            return GetOwnedProcess(state.RelayProcessId, state.RelayStartTimeUtcTicks, RelayPath, pinHandle, true);
-        }
+        { return processes.GetOwnedRelay(state, pinHandle); }
         public virtual Process GetOwnedMonitor(RuntimeState state, bool pinHandle = false)
-        {
-            if (state == null || state.WatchdogProcessId <= 0) return null;
-            string expected;
-            if (state.RuntimeEngine == "CSharp")
-            {
-                if (!String.Equals(Path.GetFullPath(state.WatchdogPath ?? ""), WorkerPath, StringComparison.OrdinalIgnoreCase)) throw new IOException("监控路径与当前工具不符。");
-                expected = WorkerPath;
-            }
-            else if (String.IsNullOrEmpty(state.RuntimeEngine) || state.RuntimeEngine == "PowerShell")
-            {
-                // Compatibility check only: never execute the retired engine.
-                expected = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-            }
-            else throw new IOException("无法识别运行会话中的监控引擎。");
-            return GetOwnedProcess(state.WatchdogProcessId, state.WatchdogStartTimeUtcTicks, expected, pinHandle, true);
-        }
+        { return processes.GetOwnedMonitor(state, pinHandle); }
         public virtual int[] GetTcpPortOwners(int port, bool established = false) { return RuntimeTcp.GetOwners(port, established); }
         public virtual Process StartDetached(string executable, string[] arguments)
-        {
-            // ShellExecuteEx starts these trusted background helpers without inheriting the
-            // action worker's output pipe. Clearing standard handles alone is insufficient
-            // when Windows has also inherited unnamed copies of an output handle.
-            return Process.Start(new ProcessStartInfo(executable, String.Join(" ", arguments.Select(Quote))) {
-                UseShellExecute = true, WindowStyle = ProcessWindowStyle.Hidden, WorkingDirectory = Root });
-        }
+        { return processes.StartDetached(executable, arguments); }
         public virtual NetworkLink ResolveNetwork(IDictionary<string, object> config, RuntimeState expected = null, bool wifiOnly = false) { return NativeNetwork.Read(config, expected, wifiOnly); }
         public virtual bool WifiHasIPv6Default(int index) { return NativeNetwork.WifiHasIPv6Default(index); }
         public virtual void ApplyNetwork(RuntimeState state, NetworkLink link)

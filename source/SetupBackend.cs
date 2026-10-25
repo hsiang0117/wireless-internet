@@ -171,13 +171,7 @@ namespace WirelessInternet
 
         static void ParseAddress(string text, out string address, out int port)
         {
-            text = (text ?? String.Empty).Trim();
-            Match match = Regex.Match(text, "^(?:(?<ip>[0-9]{1,3}(?:[.][0-9]{1,3}){3}):)?(?<port>[0-9]{1,5})$");
-            IPAddress parsed;
-            address = match.Groups["ip"].Value;
-            port = 0;
-            if (!match.Success || !Int32.TryParse(match.Groups["port"].Value, out port) || port < 1 || port > 65535 ||
-                (address.Length > 0 && (!IPAddress.TryParse(address, out parsed) || parsed.AddressFamily != AddressFamily.InterNetwork)))
+            if (!AndroidProtocol.TryParseEnteredEndpoint(text, out address, out port))
                 throw new IOException("请输入端口号（1–65535），或 IPv4地址:端口。例如 37123 或 192.168.43.1:37123。");
         }
 
