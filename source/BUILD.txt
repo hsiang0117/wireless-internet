@@ -1,4 +1,6 @@
-﻿C# source layout - Wireless Internet Sharing 1.4.1
+﻿C# source layout - Wireless Internet Sharing 1.4.2
+
+1.4.2 compatibility fix: tolerate empty route metrics while enumerating VPN/TUN virtual adapters, so unrelated virtual adapters cannot fail Start or watchdog heartbeat checks. Route-metric validation remains required for the selected physical Wi-Fi and Ethernet adapters. This change does not modify TUN/VPN routing rules or promise compatibility with every VPN. Validated on the current Clash Verge / Mihomo TUN environment: Start, Stop, restart, certificate-verified phone HTTPS with matching relay flow and VPN counters, and healthy monitoring beyond the 30-second protection deadline. Other VPN, driver and network combinations still require target-machine validation.
 
 WirelessInternet.exe: Program.cs Backend.cs MemoryLog.cs AppForm.cs SetupForm.cs SetupBackend.cs UiDpi.cs
 References: System.Windows.Forms.dll System.Drawing.dll System.Web.Extensions.dll

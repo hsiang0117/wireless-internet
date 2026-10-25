@@ -1,6 +1,8 @@
 {
   "Transport": "NativeTls",
-  "PhoneIdentity": "YOUR_PHONE_ID",
+  "PhoneIdentity": "",
   "DisconnectTimeoutSeconds": 30,
-  "Description": "System Wireless debugging; discover the TLS port over mDNS and connect through the phone hotspot. No USB bootstrap."
+  "ConnectEndpoint": "",
+  "WifiInterfaceIndex": 0,
+  "EthernetInterfaceIndex": 0
 }

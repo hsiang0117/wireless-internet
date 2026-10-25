@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -79,25 +79,69 @@ namespace WirelessInternet
                     IsUp = ReadUInt(row, "InterfaceOperationalStatus") == 1
                 });
             });
+            HashSet<int> physicalCandidates = new HashSet<int>(result.Adapters
+                .Where(a => a.IsUp && (GetKind(a) == "Wifi" || GetKind(a) == "Ethernet"))
+                .Select(a => a.InterfaceIndex));
             Query("SELECT InterfaceIndex,AddressFamily,DestinationPrefix,NextHop,RouteMetric,Store,CompartmentId FROM MSFT_NetRoute WHERE AddressFamily=2 AND Store=1 AND CompartmentId=1 AND DestinationPrefix='0.0.0.0/0'", delegate(ManagementObject row)
             {
-                result.Routes.Add(new RouteData {
-                    InterfaceIndex = ReadIndex(row), AddressFamily = checked((ushort)ReadUInt(row, "AddressFamily")),
-                    DestinationPrefix = ReadText(row, "DestinationPrefix"), NextHop = ReadText(row, "NextHop"),
-                    RouteMetric = ReadUInt(row, "RouteMetric"), Store = checked((byte)ReadUInt(row, "Store")),
-                    CompartmentId = ReadUInt(row, "CompartmentId")
-                });
+                RouteData route = ParseCandidateRoute(physicalCandidates, Fields(row));
+                if (route != null) result.Routes.Add(route);
             });
             Query("SELECT InterfaceIndex,AddressFamily,InterfaceMetric,Store,CompartmentId FROM MSFT_NetIPInterface WHERE AddressFamily=2 AND Store=1 AND CompartmentId=1", delegate(ManagementObject row)
             {
-                result.IpInterfaces.Add(new IpInterfaceData {
-                    InterfaceIndex = ReadIndex(row), AddressFamily = checked((ushort)ReadUInt(row, "AddressFamily")),
-                    InterfaceMetric = ReadUInt(row, "InterfaceMetric"), Store = checked((byte)ReadUInt(row, "Store")),
-                    CompartmentId = ReadUInt(row, "CompartmentId")
-                });
+                IpInterfaceData ipInterface = ParseCandidateIpInterface(physicalCandidates, Fields(row));
+                if (ipInterface != null) result.IpInterfaces.Add(ipInterface);
             });
             return result;
         }
+
+        // Ignore unrelated virtual interfaces before reading fields that their WMI provider
+        // may omit. Required data for a physical candidate must still fail closed.
+        internal static RouteData ParseCandidateRoute(ISet<int> candidates, Func<string, object> field)
+        {
+            int index = CandidateIndex(candidates, field);
+            if (index == 0) return null;
+            return new RouteData {
+                InterfaceIndex = index, AddressFamily = checked((ushort)ReadUInt(field, "AddressFamily")),
+                DestinationPrefix = Convert.ToString(Required(field, "DestinationPrefix"), CultureInfo.InvariantCulture),
+                NextHop = Convert.ToString(Required(field, "NextHop"), CultureInfo.InvariantCulture),
+                RouteMetric = ReadUInt(field, "RouteMetric"), Store = checked((byte)ReadUInt(field, "Store")),
+                CompartmentId = ReadUInt(field, "CompartmentId")
+            };
+        }
+
+        internal static IpInterfaceData ParseCandidateIpInterface(ISet<int> candidates, Func<string, object> field)
+        {
+            int index = CandidateIndex(candidates, field);
+            if (index == 0) return null;
+            return new IpInterfaceData {
+                InterfaceIndex = index, AddressFamily = checked((ushort)ReadUInt(field, "AddressFamily")),
+                InterfaceMetric = ReadUInt(field, "InterfaceMetric"), Store = checked((byte)ReadUInt(field, "Store")),
+                CompartmentId = ReadUInt(field, "CompartmentId")
+            };
+        }
+
+        static int CandidateIndex(ISet<int> candidates, Func<string, object> field)
+        {
+            int index;
+            if (!Int32.TryParse(Convert.ToString(field("InterfaceIndex"), CultureInfo.InvariantCulture),
+                NumberStyles.Integer, CultureInfo.InvariantCulture, out index) || index <= 0 || !candidates.Contains(index)) return 0;
+            return index;
+        }
+
+        static Func<string, object> Fields(ManagementBaseObject row)
+        {
+            return delegate(string name) { PropertyData property = row.Properties[name]; return property == null ? null : property.Value; };
+        }
+
+        static object Required(Func<string, object> field, string name)
+        {
+            object value = field(name);
+            if (value == null) throw new InvalidOperationException("A required Windows network field is unavailable: " + name);
+            return value;
+        }
+
+        static uint ReadUInt(Func<string, object> field, string name) { return Convert.ToUInt32(Required(field, name), CultureInfo.InvariantCulture); }
 
         public static bool WifiHasIPv6Default(int wifiInterfaceIndex)
         {

@@ -14,3 +14,14 @@ adbkey.pub
 .vscode/
 Thumbs.db
 Desktop.ini
+
+# Local diagnostics, test outputs and credentials
+/logs/
+/tests/bin/
+/tests/results/
+/tests/*.exe
+/tests/*.pdb
+/tests/*-results.json
+.android/
+*.user
+*.suo
