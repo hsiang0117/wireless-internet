@@ -3,7 +3,7 @@
 ; Stage must be an explicit, sanitized payload; never point it at a live installation.
 ; No ADB, network command, runtime download, service or scheduled task runs in Setup.
 
-#define AppVersion "1.7.0"
+#define AppVersion "1.8.0"
 #define AppDisplayName "无线网络共享"
 #ifndef StageDir
   #define StageDir AddBackslash(SourcePath) + "..\stage"

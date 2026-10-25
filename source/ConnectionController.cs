@@ -16,12 +16,15 @@ namespace WirelessInternet
     {
         readonly RuntimeContext context;
         readonly AndroidDeviceClient devices;
+        readonly Action<ConnectionStage> stageChanged;
 
         public ConnectionController(string root) : this(new RuntimeContext(root)) { }
-        public ConnectionController(RuntimeContext context)
+        public ConnectionController(RuntimeContext context) : this(context, null) { }
+        public ConnectionController(RuntimeContext context, Action<ConnectionStage> stageChanged)
         {
             if (context == null) throw new ArgumentNullException("context");
             this.context = context;
+            this.stageChanged = stageChanged;
             devices = new AndroidDeviceClient(context);
         }
 
@@ -33,7 +36,7 @@ namespace WirelessInternet
         {
             IDisposable operation = null;
             ConnectionStartAttempt attempt = new ConnectionStartAttempt();
-            ConnectionOperationTrace trace = new ConnectionOperationTrace(ConnectionOperationKind.Start, output);
+            ConnectionOperationTrace trace = new ConnectionOperationTrace(ConnectionOperationKind.Start, output, stageChanged);
             try
             {
                 trace.Move(ConnectionStage.AcquireOperation);
@@ -274,7 +277,7 @@ namespace WirelessInternet
         public ConnectionOperationResult StopWithResult(Action<string> output)
         {
             IDisposable operation = null;
-            ConnectionOperationTrace trace = new ConnectionOperationTrace(ConnectionOperationKind.Stop, output);
+            ConnectionOperationTrace trace = new ConnectionOperationTrace(ConnectionOperationKind.Stop, output, stageChanged);
             try
             {
                 trace.Move(ConnectionStage.AcquireOperation);

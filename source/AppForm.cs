@@ -79,6 +79,10 @@ namespace WirelessInternet
         private bool _configurationMissing;
         private string _phoneBindingNotice = String.Empty;
         private DateTime _phoneBindingNoticeUntil;
+        // Presentation only; operation admission and completion still belong to the coordinator.
+        private int _actionPresentationGeneration;
+        private string _actionResultStatus, _actionResultDetail;
+        private DateTime _actionResultNoticeUntil;
         internal bool AutomaticSetupEnabled { get; set; }
         private string _connectionsSignature = String.Empty;
         private bool _refreshPhoneSample = true;
@@ -460,6 +464,7 @@ namespace WirelessInternet
                         _status.Text = "状态暂不可用";
                         _detail.Text = ex.Message;
                         _light.LightColor = Color.FromArgb(255, 193, 99);
+                        ApplyActionResultNotice();
                     }
                     if (!String.Equals(_lastPollError, ex.Message, StringComparison.Ordinal))
                     {
@@ -506,32 +511,94 @@ namespace WirelessInternet
             }
             int exitCode = -1;
             if (!_operations.TryBeginAction(kind, exiting)) return -1;
+            int presentationGeneration = ++_actionPresentationGeneration;
+            _actionResultNoticeUntil = DateTime.MinValue;
             UpdateButtons();
             _status.Text = action == "Start" ? "正在建立连接…" : "正在断开连接…";
             _detail.Text = "请稍候，正在执行连接控制流程";
+            _detail.ForeColor = MutedColor;
             _light.LightColor = Color.FromArgb(255, 193, 99);
             AppendLog(DateTime.Now, "控制", action == "Start" ? "开始连接手机。" : "正在停止本次共享。", "Info");
             try
             {
                 await _operations.WaitForPollAsync();
-                exitCode = await Task.Run(delegate
+                WorkerActionResult result = await Task.Run(delegate
                 {
-                    return _backend.RunAction(action, delegate(string output)
+                    return _backend.RunActionWithResult(action, delegate(string output)
                     {
                         // The worker queues bounded text directly; it never floods BeginInvoke.
                         AppendLog(DateTime.Now, "控制", output, "Info");
-                    });
+                    }, delegate(ConnectionStage stage) { QueueActionStage(presentationGeneration, action, stage); });
                 });
-                AppendLog(DateTime.Now, "控制", exitCode == 0 ? (action == "Start" ? "连接流程已完成。" : "断开流程已完成。") : "操作未完成（退出码 " + exitCode.ToString(CultureInfo.InvariantCulture) + "），请查看上方输出。", exitCode == 0 ? "Success" : "Error");
+                exitCode = result.ExitCode;
+                ShowActionResult(action, result);
             }
-            catch (Exception ex) { AppendLog(DateTime.Now, "控制", ex.Message, "Error"); }
+            catch (Exception ex)
+            {
+                ShowActionFailure("操作结果未确认", ex.Message);
+                AppendLog(DateTime.Now, "控制", "操作结果未确认：" + ex.Message, "Error");
+            }
             finally
             {
+                // A queued stage from this attempt must never overwrite its final result or the next action.
+                ++_actionPresentationGeneration;
                 _operations.CompleteAction(exitCode);
                 UpdateButtons();
                 if (!_exitRequested) PollOnce();
             }
             return exitCode;
+        }
+
+        private void QueueActionStage(int generation, string action, ConnectionStage stage)
+        {
+            if (!IsHandleCreated || IsDisposed) return;
+            try
+            {
+                BeginInvoke((Action)delegate
+                {
+                    if (IsDisposed || _closing || !_actionBusy || generation != _actionPresentationGeneration) return;
+                    _status.Text = action == "Start" ? "正在建立连接…" : "正在断开连接…";
+                    _detail.Text = ConnectionStageText.Describe(stage);
+                });
+            }
+            catch (InvalidOperationException) { }
+        }
+
+        private void ShowActionResult(string action, WorkerActionResult result)
+        {
+            string verb = action == "Start" ? "连接" : "断开";
+            if (!result.Verified)
+            {
+                ShowActionFailure("操作结果未确认", result.Message);
+                AppendLog(DateTime.Now, "控制", result.Message, "Error");
+                return;
+            }
+            if (result.ExitCode == 0)
+            {
+                AppendLog(DateTime.Now, "控制", verb + "流程已完成。" + result.Message, "Success");
+                return;
+            }
+            string stage = result.FinalStage.HasValue ? ConnectionStageText.Describe(result.FinalStage.Value) : "未知阶段";
+            ShowActionFailure(verb + "未完成 · " + stage, result.Message);
+            AppendLog(DateTime.Now, "控制", verb + "未完成 · " + stage + "：" + result.Message +
+                "（退出码 " + result.ExitCode.ToString(CultureInfo.InvariantCulture) + "）", "Error");
+        }
+
+        private void ShowActionFailure(string status, string detail)
+        {
+            _actionResultStatus = status;
+            _actionResultDetail = detail;
+            _actionResultNoticeUntil = DateTime.UtcNow.AddSeconds(8);
+            ApplyActionResultNotice();
+        }
+
+        private void ApplyActionResultNotice()
+        {
+            if (DateTime.UtcNow >= _actionResultNoticeUntil) return;
+            _status.Text = _actionResultStatus;
+            _detail.Text = _actionResultDetail;
+            _detail.ForeColor = Color.FromArgb(255, 193, 99);
+            _light.LightColor = Color.FromArgb(255, 193, 99);
         }
 
         private void ApplySnapshot(Snapshot value)
@@ -550,6 +617,7 @@ namespace WirelessInternet
                 if (DateTime.UtcNow < _phoneBindingNoticeUntil) _detail.Text = _phoneBindingNotice;
                 _detail.ForeColor = DateTime.UtcNow < _phoneBindingNoticeUntil ? Color.FromArgb(255, 193, 99) : MutedColor;
                 _light.LightColor = value.Healthy ? AccentColor : value.HasSession ? Color.FromArgb(255, 193, 99) : MutedColor;
+                ApplyActionResultNotice();
             }
             _phone.Text = "手机 · " + (String.IsNullOrWhiteSpace(value.Phone) ? "等待连接" : value.Phone);
             _endpoint.Text = "无线端点  " + (String.IsNullOrWhiteSpace(value.Endpoint) ? "—" : value.Endpoint);

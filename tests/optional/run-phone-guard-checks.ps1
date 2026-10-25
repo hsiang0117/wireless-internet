@@ -1,10 +1,17 @@
-﻿param(
-    [string]$SourceFile = (Join-Path (Split-Path -Parent $PSScriptRoot) 'source\PhoneGuardSource.cs'),
+param(
+    [string]$SourceFile = '',
     [string]$BaselineSourceFile = '',
-    [string]$BashPath = ''
+    [string]$BashPath = '',
+    [switch]$KeepArtifacts
 )
-$ErrorActionPreference='Stop'
-$ProgressPreference='SilentlyContinue'
+. (Join-Path (Split-Path -Parent $PSScriptRoot) 'TestSupport.ps1')
+$sourceDirectory = ''
+if ($SourceFile) { $SourceFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($SourceFile); $sourceDirectory = Split-Path -Parent $SourceFile }
+$run = Initialize-TestRun $sourceDirectory 'g' $KeepArtifacts.IsPresent
+if (-not $SourceFile) { $SourceFile = Join-Path $run.Source 'PhoneGuardSource.cs' }
+$runRoot = $run.RunRoot
+$succeeded = $false
+try {
 if(-not $BashPath){
     $candidates=@()
     $git=Get-Command git.exe -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -16,9 +23,8 @@ if(-not $BashPath -or -not (Test-Path -LiteralPath $BashPath -PathType Leaf)){th
 $compiler=Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 $SourceFile=$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($SourceFile)
 if($BaselineSourceFile){$BaselineSourceFile=$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($BaselineSourceFile)}
-$runRoot=Join-Path (Join-Path $PSScriptRoot 'bin') ('phone-guard-'+[guid]::NewGuid().ToString('N'))
-$null=New-Item -ItemType Directory -Path $runRoot -Force
-$export=Join-Path $PSScriptRoot 'PhoneGuardSourceExport.cs'
+
+$export=Join-Path $run.TestRoot 'fixtures\PhoneGuardSourceExport.cs'
 function Export-Guard([string]$Source,[string]$Name){
     $executable=Join-Path $runRoot ($Name+'-export.exe')
     $shell=Join-Path $runRoot ($Name+'.sh')
@@ -38,3 +44,7 @@ $harness=Join-Path $PSScriptRoot 'PhoneGuardShellChecks.sh'
 if($LASTEXITCODE -ne 0){throw 'Phone guard harness syntax failed.'}
 & $BashPath --noprofile --norc $harness $new $old $runRoot
 if($LASTEXITCODE -ne 0){throw 'Isolated phone guard shell checks failed.'}
+
+    $succeeded = $true
+}
+finally { Complete-TestRun $succeeded }

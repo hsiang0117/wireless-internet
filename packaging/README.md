@@ -6,6 +6,8 @@
 
 1.6.0 将连接生命周期分为明确阶段，并增加会话存储、进程管理、手机命令和纯协议解析组件；这些源文件仍分别编入原有 EXE，不增加运行时共享 DLL。GUI 只共用纯 `AndroidProtocol`，worker 编入其余生命周期服务。发布前应核对项目的 Compile 清单与 `SourceFiles` 同步，不能只复制新的 worker 二进制而漏掉可重编所需的源码。
 
+1.8.0 增加 GUI／worker 共用的 `ActionProtocol.cs` 与桌面侧 `WorkerActionClient.cs`，分别编入现有组件；最终结果通过独立本机命名管道传递。此次更新需正常停止共享后一起替换桌面和 worker，不能只在活动会话期间替换观察窗口。
+
 本轮打包保留原有操作锁、默认 30 秒失联保护和 1.5.1 的省电采样行为；版本升级沿用既有绑定格式和会话协议。发布输入必须是冻结源码、已核验依赖和当前文档，不能从活动安装目录整体复制。
 
 ## 构建与 staging
@@ -30,6 +32,11 @@
 
 编译安装包时额外传入 `-CompileInstaller -InnoCompilerPath <现有ISCC.exe路径>`；可选 `-ChineseMessagesFile <ChineseSimplified.isl路径>`。没有简体中文编译消息文件时安装器使用英文向导；应用自身中文不受影响。输出到 `artifacts/release/`，可通过 `OutputDirectory` 改为其他构建输出目录。
 
+## 验证范围
+
+日常代码修改先运行 `tests/run-tests.ps1` 的 focused 检查；历史离线回归仅在相关模块或发布风险需要时显式运行 `tests/run-full.ps1`（或 `-Full`）。GUI、手机守护和下面的隔离安装检查均为按需入口，不串入默认快速测试。测试布局、保留的安全回归及 `-KeepArtifacts` 见 [tests/README.md](../tests/README.md)。
+
+发布构建仍核对显式文件清单和 payload 哈希；不因测试目录精简而省略编译或发布完整性检查。安装与 DPI 验证按实际改动选择，避免同一源码反复执行无关长测试。
 ## 隔离安装检查
 
 `Test-Installer.ps1 -SetupPath <已编译安装器路径>` 会在此 checkout 的唯一测试目录完成安装、升级和卸载，并临时写入当前用户卸载项与独立开始菜单分组。**它不是只读测试。** 运行前须正常结束已有共享并退出桌面应用；脚本检测到既有安装注册或应用 presence marker 会拒绝继续，不自动停止任何应用。

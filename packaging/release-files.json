@@ -1,7 +1,7 @@
 {
-  "Version": "1.7.0",
+  "Version": "1.8.0",
   "SourceFiles": [
-    "AppForm.cs", "Backend.cs", "ConnectionController.cs", "MemoryLog.cs",
+    "AppForm.cs", "Backend.cs", "ActionProtocol.cs", "WorkerActionClient.cs", "ConnectionController.cs", "MemoryLog.cs",
     "AndroidProtocol.cs", "AndroidDeviceClient.cs", "RuntimeSessionStore.cs", "OwnedProcessManager.cs", "ConnectionOperation.cs",
     "MonitoringModels.cs", "SystemSessionObservationSource.cs", "PhoneTrafficTracker.cs", "MonitorSnapshotAssembler.cs",
     "ConsoleLogView.cs", "DashboardControls.cs", "UiVisualStyle.cs",

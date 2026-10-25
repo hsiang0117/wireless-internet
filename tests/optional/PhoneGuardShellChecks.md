@@ -3,16 +3,16 @@
 本测试可选，需要已经安装的 Git for Windows 和 .NET Framework x64 编译器，不安装依赖。它单独测试编入 C# 的手机 shell 守护；默认读取 `source/PhoneGuardSource.cs`：
 
 ```powershell
-.\tests\run-phone-guard-checks.ps1
+.\tests\optional\run-phone-guard-checks.ps1
 ```
 
 可指定工作副本或旧版本源码，对照相同的模拟 60 秒健康会话：
 
 ```powershell
-.\tests\run-phone-guard-checks.ps1 -SourceFile .\path\to\PhoneGuardSource.cs -BaselineSourceFile .\path\to\previous\PhoneGuardSource.cs
+.\tests\optional\run-phone-guard-checks.ps1 -SourceFile .\path\to\PhoneGuardSource.cs -BaselineSourceFile .\path\to\previous\PhoneGuardSource.cs
 ```
 
-脚本自动从现有 Git 和 Program Files 查找 Bash，也可通过 `-BashPath` 指定已有 `bash.exe`。编译产物和假状态文件仅位于测试自己的 `bin/phone-guard-<随机值>/`；不要把这些生成文件装入运行包或提交到版本控制。
+脚本自动从现有 Git 和 Program Files 查找 Bash，也可通过 `-BashPath` 指定已有 `bash.exe`。编译产物和假状态文件仅位于测试自己的 `tests/bin/g-<8位随机值>/`；成功后仅自动删除本次带归属标记的生成目录；`-KeepArtifacts` 可保留，失败会保留。不会清理历史输出。不要把生成文件装入运行包或提交到版本控制。
 
 测试先按 C# 5/x64 编译常量导出器，再对导出的原始守护及夹具执行 Bash 语法检查。实际执行的是隔离副本：根目录、单调时钟读取和 Android 命令均替换为夹具；`flock` 是串行逻辑 stub，不是真实内核锁。
 

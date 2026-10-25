@@ -30,24 +30,26 @@ namespace WirelessInternet
         public Snapshot Poll(PhoneSamplingMode mode) { return monitor.Poll(mode); }
         public int RunAction(string action, Action<string> output)
         {
+            return RunActionWithResult(action, output, null).ExitCode;
+        }
+        public WorkerActionResult RunActionWithResult(string action, Action<string> output, Action<ConnectionStage> stageChanged)
+        {
             if (output == null) throw new ArgumentNullException("output");
-            if (preview) { output("界面预览模式不执行连接操作。"); return 1; }
             if (action != "Start" && action != "Stop") throw new ArgumentException("Unknown action.");
+            if (preview) { output("界面预览模式不执行连接操作。"); return WorkerActionResult.Preview(action); }
             string worker = Path.Combine(root, "support", "ConnectionWorker.exe");
             if (!File.Exists(worker)) throw new IOException("桌面连接组件缺失，请重新安装完整工具包。");
             long generation = Interlocked.Increment(ref actionGeneration);
             int active = 1;
             try
             {
-                // The worker's individual commands are bounded. Never hard-kill a partial Stop.
-                SharedCommandResult result = ProcessExecution.Run(worker, new string[] { "--action", action, "--root", root }, new SharedCommandOptions {
-                    WorkingDirectory = root, TimeoutMilliseconds = Timeout.Infinite,
-                    ProgressLine = delegate(string line, bool error) {
-                        if (Thread.VolatileRead(ref active) != 0 && Interlocked.Read(ref actionGeneration) == generation && !String.IsNullOrWhiteSpace(line)) output(line);
-                    } });
-                if (result.DroppedProgressLines > 0) output("控制进度较多，已略过部分较早消息；操作结果以最终状态为准。");
-                if (result.OutputIncomplete) output("控制命令已结束，部分进度输出未及时关闭；请核对最终连接状态。");
-                return result.ExitCode;
+                return WorkerActionClient.Run(worker, root, action,
+                    delegate(string line) {
+                        if (Thread.VolatileRead(ref active) != 0 && Interlocked.Read(ref actionGeneration) == generation) output(line);
+                    },
+                    delegate(ConnectionStage stage) {
+                        if (stageChanged != null && Thread.VolatileRead(ref active) != 0 && Interlocked.Read(ref actionGeneration) == generation) stageChanged(stage);
+                    });
             }
             finally { Interlocked.Exchange(ref active, 0); }
         }

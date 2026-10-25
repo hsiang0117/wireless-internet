@@ -4,7 +4,7 @@
 
 电脑通过有线网络上网，Wi-Fi 连接**手机开启的热点**；程序利用无线 ADB 和 gnirehtet，把手机应用的网络请求送到电脑，再由电脑访问互联网。电脑的 Windows「移动热点」保持关闭，无需先插 USB。
 
-当前版本：**1.7.0**。原创代码和文档采用 [MIT License](LICENSE)。
+当前版本：**1.8.0**。原创代码和文档采用 [MIT License](LICENSE)。
 
 ## 原理说明
 
@@ -194,7 +194,9 @@ flowchart LR
 
 1.7.0 整理桌面监控与显示：`SystemSessionObservationSource` 负责只读系统观察，`PhoneTrafficTracker` 管理统计与采样缓存，`MonitorSnapshotAssembler` 组合快照；`Backend` 保留原调用入口。`ConsoleLogView` 独立处理有界日志批次、去重及阅读位置，自绘控件与视觉值由 `DashboardControls`／`UiVisualStyle` 提供。原有布局、DPI、日志限额、三秒采样和后台暂停行为保持不变；操作状态仍由同一个 `UiOperationCoordinator` 管理。
 
-源码提供三个独立的 MSBuild 项目和 solution，共享源文件按组件编译，运行时不新增共享 DLL。编译说明见 [source/BUILD.md](source/BUILD.md)，离线测试方法见 [tests/README.md](tests/README.md)。测试覆盖连接阶段与失败清理、会话存储、进程身份、手机协议、网卡、失联保护、命令执行、统计状态和操作协调；离线回归不调用真实 ADB，也不修改网络设置。
+1.8.0 将操作阶段和最终结果通过独立的本机命名管道传给界面，与可限流的控制台日志分开。界面显示当前连接／断开阶段，失败时显示具体阶段与原因；未收到完整且匹配的结果时显示“操作结果未确认”，不会仅凭进程退出码报告成功。最终结果仍需与进程退出码核对；丢失界面连接不会中断已经开始的安全清理。
+
+源码提供三个独立的 MSBuild 项目和 solution，共享源文件按组件编译，运行时不新增共享 DLL。编译说明见 [source/BUILD.md](source/BUILD.md)，离线测试方法见 [tests/README.md](tests/README.md)。默认测试只运行操作结果通道的快速检查；历史安全回归和需要额外环境的检查可按需运行。离线回归不调用真实 ADB，也不修改网络设置。
 
 ## 许可证与第三方组件
 

@@ -1,6 +1,6 @@
 ﻿# 源码与构建
 
-本文对应无线网络共享 1.7.0。使用流程见仓库根目录 [README](../README.md)，离线回归见 [tests/README.md](../tests/README.md)。
+本文对应无线网络共享 1.8.0。使用流程见仓库根目录 [README](../README.md)，离线测试见 [tests/README.md](../tests/README.md)。
 
 ## 三个独立项目
 
@@ -8,8 +8,8 @@
 
 | 项目 | 源文件 | 目标 |
 | --- | --- | --- |
-| `WirelessInternet.csproj` | `Program`、`Backend`、监控组件、日志视图与自绘控件、`MemoryLog`、`AppForm`、`SetupForm`、`SetupBackend`、`AndroidProtocol`、`UiDpi`、`ProcessExecution`、`SessionStatus`、`UiOperationCoordinator` | `WirelessInternet.exe`，WinExe |
-| `ConnectionWorker.csproj` | `WorkerHost`、`RuntimeCommon`、`RuntimeSessionStore`、`OwnedProcessManager`、`AndroidDeviceClient`、`AndroidProtocol`、`NativeNetwork`、`ConnectionController`、`ConnectionOperation`、`WatchdogController`、`PhoneGuardSource`、`ProcessExecution` | `ConnectionWorker.exe`，Exe |
+| `WirelessInternet.csproj` | `Program`、`Backend`、`WorkerActionClient`、`ActionProtocol`、监控组件、日志视图与自绘控件、`MemoryLog`、`AppForm`、`SetupForm`、`SetupBackend`、`AndroidProtocol`、`UiDpi`、`ProcessExecution`、`SessionStatus`、`UiOperationCoordinator` | `WirelessInternet.exe`，WinExe |
+| `ConnectionWorker.csproj` | `WorkerHost`、`ActionProtocol`、`RuntimeCommon`、`RuntimeSessionStore`、`OwnedProcessManager`、`AndroidDeviceClient`、`AndroidProtocol`、`NativeNetwork`、`ConnectionController`、`ConnectionOperation`、`WatchdogController`、`PhoneGuardSource`、`ProcessExecution` | `ConnectionWorker.exe`，Exe |
 | `RelayLogHost.csproj` | `RelayLogHost`、`MemoryLog` | `RelayLogHost.exe`，WinExe |
 
 程序集引用和源清单只在项目文件中维护。共享源码分别编入需要它的组件，保持桌面、连接/保护 worker 和日志 host 的现有进程边界，不增加运行时共享 DLL。
@@ -49,6 +49,14 @@ Write-Output $out
 | `RuntimeContext` | 兼容门面，保留现有虚方法和调用入口并转发到服务，使注入测试及原调用方能逐步迁移 |
 
 核心互斥锁的名称、获取／释放时机及等待策略保持不变。手机控制与会话提交仍在原有锁范围执行；等待首次监控确认前按原协议释放锁，再通过会话与进程身份重新核验。会话记录按 token 删除，已跟踪进程按 PID、启动时间和路径核验后清理；已提交会话的必要资源按原恢复路径保留，不按进程名称或进程树清理。
+
+## 操作结果通道
+
+`ActionProtocol` 提供 GUI／worker 共用的阶段类型、中文显示名称和有长度上限的版本化帧。每次开始／断开生成独立随机操作 ID 与本机命名管道；worker 在执行前建立通道，阶段通知由后台写入器合并发送，最终结果包含最终阶段、退出码、消息与完整阶段序列。控制台仍保留可限流的文字输出，结果不依赖控制台缓存或 UI 日志队列。
+
+`WorkerActionClient` 独立读取并核对帧版本、操作 ID、动作与格式，收到最终结果后还须核对真实进程退出码。`Backend.RunActionWithResult` 返回 `WorkerActionResult`；原 `RunAction` 入口保留，但缺失、损坏或不匹配的结果不会映射为成功。界面阶段回调异步派发，旧操作的迟到阶段不能覆盖最终结果或下一次操作。失败阶段与“结果未确认”短暂保留在状态区，并写入内存控制台。
+
+结果通道在动作开始前无法连接时不执行连接／断开副作用。动作开始后，界面退出或不读取管道不会取消部分完成的清理，worker 继续执行原有安全顺序；通道写入与退出排空等待有上限，连接操作本身沿用原有等待规则，不增加外层强杀超时。此通道不改变会话文件格式、保护心跳或操作锁。
 
 ## 显示与运行配置
 
