@@ -283,9 +283,60 @@ namespace WirelessInternet
                 trace.Move(ConnectionStage.AcquireOperation);
                 operation = context.EnterCoreMutex(6000);
                 trace.Move(ConnectionStage.ValidateConfiguration);
-                Dictionary<string, object> configuration = ReadConfiguration();
                 RuntimeState state = context.ReadState();
                 ValidateTransport(state);
+                if (state == null)
+                {
+                    const string message = "当前没有记录共享会话，无需断开。";
+                    Report(output, message);
+                    return CompleteStop(trace, ref operation, message);
+                }
+                string token = state.ProtectionSessionId;
+                StaleSessionInspection inspection = context.InspectStaleSession(state);
+                if (inspection == null)
+                {
+                    trace.Move(ConnectionStage.VerifyOwnership);
+                    throw new IOException("无法确认旧会话资源，已保留会话记录。");
+                }
+                if (!String.IsNullOrEmpty(inspection.BlockReason))
+                {
+                    trace.Move(ConnectionStage.VerifyOwnership);
+                    throw new IOException(inspection.BlockReason);
+                }
+                if (inspection.CanRetire)
+                {
+                    trace.Move(ConnectionStage.VerifyOwnership);
+                    if (inspection.HasLiveResources) throw new IOException("共享资源仍在运行，已保留会话记录。");
+                    // An offline phone cannot acknowledge Stop. Retire only a
+                    // positively dead PC session, under the original operation lock.
+                    RuntimeState latest = context.ReadState();
+                    if (latest == null)
+                    {
+                        const string message = "当前没有记录共享会话，无需断开。";
+                        Report(output, message);
+                        return CompleteStop(trace, ref operation, message);
+                    }
+                    if (!String.Equals(latest.ProtectionSessionId, token, StringComparison.Ordinal))
+                        throw new IOException("共享会话已发生变化，已保留当前记录，请重试断开。");
+                    ValidateTransport(latest);
+                    StaleSessionInspection confirmed = context.InspectStaleSession(latest);
+                    if (confirmed == null || !confirmed.CanRetire || confirmed.HasLiveResources || !String.IsNullOrEmpty(confirmed.BlockReason))
+                        throw new IOException(confirmed != null && !String.IsNullOrEmpty(confirmed.BlockReason) ?
+                            confirmed.BlockReason : "共享资源已发生变化，已保留会话记录，请重试断开。");
+                    trace.Move(ConnectionStage.RemoveSession);
+                    context.DeleteStateIfToken(token);
+                    if (context.ReadState() != null)
+                        throw new IOException("共享会话记录未清理或已发生变化，已保留当前记录。");
+                    const string recovered = "电脑端共享进程已结束，已清理失效会话记录。手机 VPN 状态未确认；若仍显示连接，请在手机上手动关闭。";
+                    Report(output, recovered);
+                    return CompleteStop(trace, ref operation, recovered);
+                }
+                if (!inspection.HasLiveResources)
+                {
+                    trace.Move(ConnectionStage.VerifyOwnership);
+                    throw new IOException("无法确认旧会话资源，已保留会话记录。");
+                }
+                Dictionary<string, object> configuration = ReadConfiguration();
                 trace.Move(ConnectionStage.ResolveDevice);
                 string serial = ExistingOrDiscoveredSerial(configuration, state);
                 trace.Move(ConnectionStage.VerifyDevice);
@@ -320,10 +371,7 @@ namespace WirelessInternet
                 Report(output, "Wireless sharing stopped. You may manually turn OFF phone Wireless debugging, then turn OFF its hotspot.");
                 // Release at the same point as the original successful finally,
                 // before publishing a successful diagnostic result.
-                trace.Move(ConnectionStage.ReleaseOperation);
-                IDisposable completedOperation = operation; operation = null;
-                completedOperation.Dispose();
-                return Finish(trace, 0, "Wireless sharing stopped.");
+                return CompleteStop(trace, ref operation, "Wireless sharing stopped.");
             }
             catch (Exception error)
             {
@@ -333,6 +381,14 @@ namespace WirelessInternet
                 return Finish(trace, 1, error.Message);
             }
             finally { if (operation != null) operation.Dispose(); }
+        }
+
+        ConnectionOperationResult CompleteStop(ConnectionOperationTrace trace, ref IDisposable operation, string message)
+        {
+            trace.Move(ConnectionStage.ReleaseOperation);
+            IDisposable completedOperation = operation; operation = null;
+            completedOperation.Dispose();
+            return Finish(trace, 0, message);
         }
 
         void StopPhoneVpn(string serial, Action<string> output)

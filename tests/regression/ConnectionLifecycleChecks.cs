@@ -316,6 +316,9 @@ internal static class ConnectionLifecycleChecks
         Exception Unexpected(string operation) { Illegal++; return new InvalidOperationException("Unexpected fake operation: " + operation); }
         public override Dictionary<string, object> ReadConfig() { Locked(); Trace("config:read"); return new Dictionary<string, object>(Config); }
         public override RuntimeState ReadState() { Locked(); Trace("state:read"); return Clone(State); }
+        // This fixture models the normal online Stop protocol, never real process/TCP inspection.
+        public override StaleSessionInspection InspectStaleSession(RuntimeState state)
+        { Locked(); return new StaleSessionInspection(false, true, null); }
         public override void WriteState(RuntimeState state)
         {
             Locked(); writes++; if (Fail == "state-first" && writes == 1) throw new IOException("injected first state failure");

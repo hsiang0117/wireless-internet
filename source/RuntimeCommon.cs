@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -153,6 +154,19 @@ namespace WirelessInternet
         { return processes.GetOwnedRelay(state, pinHandle); }
         public virtual Process GetOwnedMonitor(RuntimeState state, bool pinHandle = false)
         { return processes.GetOwnedMonitor(state, pinHandle); }
+        public virtual RecordedProcessPresence ProbeRecordedProcess(int pid, string ticks, string expectedPath)
+        { return OwnedProcessManager.ProbeRecordedProcess(pid, ticks, expectedPath); }
+        public virtual bool IsRelayPortIdleForStaleCleanup()
+        {
+            // These APIs include IPv4 and IPv6. A query error must propagate as unknown.
+            IPGlobalProperties properties = IPGlobalProperties.GetIPGlobalProperties();
+            return !properties.GetActiveTcpListeners().Any(delegate(System.Net.IPEndPoint endpoint) { return endpoint.Port == 31416; }) &&
+                !properties.GetActiveTcpConnections().Any(delegate(TcpConnectionInformation connection) {
+                    return connection.LocalEndPoint.Port == 31416 && connection.State == TcpState.Established;
+                });
+        }
+        public virtual StaleSessionInspection InspectStaleSession(RuntimeState state)
+        { return processes.InspectForRetirement(state, ProbeRecordedProcess, IsRelayPortIdleForStaleCleanup); }
         public virtual int[] GetTcpPortOwners(int port, bool established = false) { return RuntimeTcp.GetOwners(port, established); }
         public virtual Process StartDetached(string executable, string[] arguments)
         { return processes.StartDetached(executable, arguments); }
