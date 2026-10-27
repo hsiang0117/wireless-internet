@@ -12,8 +12,8 @@ using System.Windows.Forms;
 [assembly: System.Reflection.AssemblyTitle("无线网络共享")]
 [assembly: System.Reflection.AssemblyProduct("无线网络共享")]
 [assembly: System.Reflection.AssemblyDescription("Android 原生无线调试 · gnirehtet 控制与流量监控")]
-[assembly: System.Reflection.AssemblyVersion("1.9.1.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.9.1.0")]
+[assembly: System.Reflection.AssemblyVersion("1.9.2.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.9.2.0")]
 [assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8")]
 
 namespace WirelessInternet
@@ -81,10 +81,18 @@ namespace WirelessInternet
                         showEvent.Set();
                         return 0;
                     }
+                    string startupNotice = null;
+                    bool startupWarning = false;
+                    // Only a normal primary launch may retire an old local record.
+                    // Read-only diagnostics and attempts to show an existing GUI do not.
+                    if (!preview && capture == null && probe == null)
+                        startupNotice = RecoverStaleAtStartup(root, out startupWarning);
                     SetCurrentProcessExplicitAppUserModelID("Local.WirelessInternet.Desktop");
                     using (AppForm form = new AppForm(root, preview))
                     {
                         form.AutomaticSetupEnabled = !preview && capture == null && probe == null;
+                        form.StartupRecoveryNotice = startupNotice;
+                        form.StartupRecoveryWarning = startupWarning;
                         string icon = Path.Combine(root, "support", "wireless.ico");
                         if (File.Exists(icon)) form.Icon = new Icon(icon);
                         RegisteredWaitHandle activation = null;
@@ -124,6 +132,34 @@ namespace WirelessInternet
                 return 2;
             }
             finally { if (releaseMarker != null) releaseMarker.Dispose(); }
+        }
+
+        static string RecoverStaleAtStartup(string root, out bool warning)
+        {
+            warning = false;
+            try
+            {
+                if (!SetupBackend.HasSessionRecord(root)) return null;
+                using (Backend backend = new Backend(root, false))
+                {
+                    WorkerActionResult result = backend.RecoverStaleSession(delegate { });
+                    if (!result.Verified || result.ExitCode != 0)
+                    {
+                        warning = true;
+                        return "启动会话检查未完成：" + result.Message;
+                    }
+                    // A completed check may have skipped an active or busy session.
+                    // Only a verified deletion needs a success notice in the GUI.
+                    foreach (ConnectionStage stage in result.Stages)
+                        if (stage == ConnectionStage.RemoveSession) return result.Message;
+                }
+            }
+            catch (Exception error)
+            {
+                warning = true;
+                return "启动会话检查未完成：" + error.Message;
+            }
+            return null;
         }
     }
 }

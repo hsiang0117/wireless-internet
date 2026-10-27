@@ -272,6 +272,58 @@ namespace WirelessInternet
         ConnectionOperationResult Finish(ConnectionOperationTrace trace, int exitCode, string message)
         { LastResult = trace.Finish(exitCode, message); return LastResult; }
 
+        // Startup maintenance is deliberately separate from Stop: an active or
+        // uncertain sharing session can never enter any phone/process cleanup.
+        public int RecoverStale(Action<string> output) { return RecoverStaleWithResult(output).ExitCode; }
+
+        public ConnectionOperationResult RecoverStaleWithResult(Action<string> output)
+        {
+            IDisposable operation = null;
+            ConnectionOperationTrace trace = new ConnectionOperationTrace(ConnectionOperationKind.RecoverStale, output, stageChanged);
+            try
+            {
+                trace.Move(ConnectionStage.AcquireOperation);
+                operation = context.TryEnterCoreMutex();
+                if (operation == null)
+                {
+                    const string busy = "连接操作正在执行，已跳过启动清理。";
+                    Report(output, busy);
+                    return Finish(trace, 0, busy);
+                }
+                trace.Move(ConnectionStage.ValidateConfiguration);
+                RuntimeState state = context.ReadState();
+                ValidateTransport(state);
+                if (state == null)
+                {
+                    const string absent = "当前没有记录共享会话，启动检查无需清理。";
+                    Report(output, absent);
+                    return CompleteStop(trace, ref operation, absent);
+                }
+                string token = state.ProtectionSessionId;
+                trace.Move(ConnectionStage.VerifyOwnership);
+                StaleSessionInspection inspection = context.InspectStaleSession(state);
+                if (inspection == null) throw new IOException("无法确认旧会话资源，启动检查已保留会话记录。");
+                if (!String.IsNullOrEmpty(inspection.BlockReason)) throw new IOException(inspection.BlockReason);
+                if (inspection.HasLiveResources && !inspection.CanRetire)
+                {
+                    const string active = "检测到正在运行的共享，启动检查已保留当前会话。";
+                    Report(output, active);
+                    return CompleteStop(trace, ref operation, active);
+                }
+                if (!inspection.CanRetire || inspection.HasLiveResources)
+                    throw new IOException("无法确认旧会话已失效，启动检查已保留会话记录。");
+                string recovered = RetireStaleRecord(token, trace);
+                Report(output, recovered);
+                return CompleteStop(trace, ref operation, recovered);
+            }
+            catch (Exception error)
+            {
+                Report(output, "启动检查未完成：" + error.Message);
+                return Finish(trace, 1, error.Message);
+            }
+            finally { if (operation != null) operation.Dispose(); }
+        }
+
         public int Stop(Action<string> output) { return StopWithResult(output).ExitCode; }
 
         public ConnectionOperationResult StopWithResult(Action<string> output)
@@ -309,25 +361,7 @@ namespace WirelessInternet
                     if (inspection.HasLiveResources) throw new IOException("共享资源仍在运行，已保留会话记录。");
                     // An offline phone cannot acknowledge Stop. Retire only a
                     // positively dead PC session, under the original operation lock.
-                    RuntimeState latest = context.ReadState();
-                    if (latest == null)
-                    {
-                        const string message = "当前没有记录共享会话，无需断开。";
-                        Report(output, message);
-                        return CompleteStop(trace, ref operation, message);
-                    }
-                    if (!String.Equals(latest.ProtectionSessionId, token, StringComparison.Ordinal))
-                        throw new IOException("共享会话已发生变化，已保留当前记录，请重试断开。");
-                    ValidateTransport(latest);
-                    StaleSessionInspection confirmed = context.InspectStaleSession(latest);
-                    if (confirmed == null || !confirmed.CanRetire || confirmed.HasLiveResources || !String.IsNullOrEmpty(confirmed.BlockReason))
-                        throw new IOException(confirmed != null && !String.IsNullOrEmpty(confirmed.BlockReason) ?
-                            confirmed.BlockReason : "共享资源已发生变化，已保留会话记录，请重试断开。");
-                    trace.Move(ConnectionStage.RemoveSession);
-                    context.DeleteStateIfToken(token);
-                    if (context.ReadState() != null)
-                        throw new IOException("共享会话记录未清理或已发生变化，已保留当前记录。");
-                    const string recovered = "电脑端共享进程已结束，已清理失效会话记录。手机 VPN 状态未确认；若仍显示连接，请在手机上手动关闭。";
+                    string recovered = RetireStaleRecord(token, trace);
                     Report(output, recovered);
                     return CompleteStop(trace, ref operation, recovered);
                 }
@@ -381,6 +415,26 @@ namespace WirelessInternet
                 return Finish(trace, 1, error.Message);
             }
             finally { if (operation != null) operation.Dispose(); }
+        }
+
+        // Both callers hold the existing core lease and have already obtained a
+        // positive, local-only retirement assessment. Recheck before deleting.
+        string RetireStaleRecord(string token, ConnectionOperationTrace trace)
+        {
+            RuntimeState latest = context.ReadState();
+            if (latest == null) return "当前没有记录共享会话，无需断开。";
+            if (!String.Equals(latest.ProtectionSessionId, token, StringComparison.Ordinal))
+                throw new IOException("共享会话已发生变化，已保留当前记录，请重试断开。");
+            ValidateTransport(latest);
+            StaleSessionInspection confirmed = context.InspectStaleSession(latest);
+            if (confirmed == null || !confirmed.CanRetire || confirmed.HasLiveResources || !String.IsNullOrEmpty(confirmed.BlockReason))
+                throw new IOException(confirmed != null && !String.IsNullOrEmpty(confirmed.BlockReason) ?
+                    confirmed.BlockReason : "共享资源已发生变化，已保留会话记录，请重试断开。");
+            trace.Move(ConnectionStage.RemoveSession);
+            context.DeleteStateIfToken(token);
+            if (context.ReadState() != null)
+                throw new IOException("共享会话记录未清理或已发生变化，已保留当前记录。");
+            return "电脑端共享进程已结束，已清理失效会话记录。手机 VPN 状态未确认；若仍显示连接，请在手机上手动关闭。";
         }
 
         ConnectionOperationResult CompleteStop(ConnectionOperationTrace trace, ref IDisposable operation, string message)

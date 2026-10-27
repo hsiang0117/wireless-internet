@@ -1,5 +1,5 @@
 {
-  "Version": "1.9.1",
+  "Version": "1.9.2",
   "SourceFiles": [
     "AppForm.cs", "Backend.cs", "ActionProtocol.cs", "WorkerActionClient.cs", "ConnectionController.cs", "MemoryLog.cs",
     "SharedDataModels.cs", "ConfigurationDocument.cs",

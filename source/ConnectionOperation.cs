@@ -35,7 +35,8 @@ namespace WirelessInternet
         {
             Current = stage; stages.Add(stage);
             if (stageChanged != null) try { stageChanged(stage); } catch { }
-            if (output != null) try { output((operation == ConnectionOperationKind.Start ? "连接阶段 · " : "断开阶段 · ") + Describe(stage)); } catch { }
+            if (output != null) try { output((operation == ConnectionOperationKind.Start ? "连接阶段 · " :
+                operation == ConnectionOperationKind.RecoverStale ? "启动检查 · " : "断开阶段 · ") + Describe(stage)); } catch { }
         }
         public ConnectionOperationResult Finish(int exitCode, string message)
         {

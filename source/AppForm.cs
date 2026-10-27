@@ -84,6 +84,8 @@ namespace WirelessInternet
         private string _actionResultStatus, _actionResultDetail;
         private DateTime _actionResultNoticeUntil;
         internal bool AutomaticSetupEnabled { get; set; }
+        internal string StartupRecoveryNotice { get; set; }
+        internal bool StartupRecoveryWarning { get; set; }
         private string _connectionsSignature = String.Empty;
         private bool _refreshPhoneSample = true;
         private bool _phoneStatisticsVisible;
@@ -377,6 +379,9 @@ namespace WirelessInternet
                 _trayIcon.Icon = Icon;
                 _trayIcon.Visible = true;
                 AppendLog(DateTime.Now, "界面", preview ? "预览模式：显示模拟数据，不连接手机、不更改当前共享。" : "控制台已就绪。连接、断开与失联保护沿用当前工具配置。", preview ? "Warning" : "Info");
+                if (!String.IsNullOrWhiteSpace(StartupRecoveryNotice))
+                    AppendLog(DateTime.Now, "启动检查", StartupRecoveryNotice, StartupRecoveryWarning ? "Warning" : "Success");
+                StartupRecoveryNotice = null;
                 PollOnce();
                 _timer.Start();
                 _logTimer.Start();

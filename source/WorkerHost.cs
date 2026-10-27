@@ -83,7 +83,11 @@ namespace WirelessInternet
                     using (WorkerActionWriter writer = WorkerActionWriter.Connect(operationId, action, 2000))
                     {
                         ConnectionController controlled = new ConnectionController(context, writer.PublishStage);
-                        ConnectionOperationResult result = action == "Start" ? controlled.StartWithResult(Console.WriteLine) : controlled.StopWithResult(Console.WriteLine);
+                        ConnectionOperationResult result;
+                        if (action == "Start") result = controlled.StartWithResult(Console.WriteLine);
+                        else if (action == "Stop") result = controlled.StopWithResult(Console.WriteLine);
+                        else if (action == "RecoverStale") result = controlled.RecoverStaleWithResult(Console.WriteLine);
+                        else throw new ArgumentException("Unknown controlled worker action.");
                         if (!writer.Complete(result, 2000))
                             try { Console.Error.WriteLine("Control result was not delivered; the connection action has finished."); } catch { }
                         return result.ExitCode;
@@ -92,6 +96,7 @@ namespace WirelessInternet
                 ConnectionController controller = new ConnectionController(context);
                 if (action == "Start") return controller.Start(Console.WriteLine);
                 if (action == "Stop") return controller.Stop(Console.WriteLine);
+                if (action == "RecoverStale") return controller.RecoverStale(Console.WriteLine);
                 if (action == "Check") return controller.Check(Console.WriteLine);
                 throw new ArgumentException("Unknown desktop worker action.");
             }

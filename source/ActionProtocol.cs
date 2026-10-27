@@ -6,7 +6,7 @@ using System.Web.Script.Serialization;
 
 namespace WirelessInternet
 {
-    public enum ConnectionOperationKind { Start, Stop }
+    public enum ConnectionOperationKind { Start, Stop, RecoverStale }
     public enum ConnectionStage
     {
         AcquireOperation, ValidateConfiguration, ResolveDevice, VerifyDevice,
@@ -46,7 +46,7 @@ namespace WirelessInternet
             if (operationId == null || operationId.Length != 32) throw new IOException("Invalid control operation identifier.");
             foreach (char ch in operationId)
                 if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) throw new IOException("Invalid control operation identifier.");
-            if (action != "Start" && action != "Stop") throw new IOException("Invalid control action.");
+            if (action != "Start" && action != "Stop" && action != "RecoverStale") throw new IOException("Invalid control action.");
         }
 
         static void Validate(ActionControlFrame frame, string operationId, string action)

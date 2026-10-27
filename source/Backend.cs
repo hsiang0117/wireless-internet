@@ -36,6 +36,15 @@ namespace WirelessInternet
         {
             if (output == null) throw new ArgumentNullException("output");
             if (action != "Start" && action != "Stop") throw new ArgumentException("Unknown action.");
+            return RunWorker(action, output, stageChanged);
+        }
+        public WorkerActionResult RecoverStaleSession(Action<string> output)
+        {
+            if (output == null) throw new ArgumentNullException("output");
+            return RunWorker("RecoverStale", output, null);
+        }
+        WorkerActionResult RunWorker(string action, Action<string> output, Action<ConnectionStage> stageChanged)
+        {
             if (preview) { output("界面预览模式不执行连接操作。"); return WorkerActionResult.Preview(action); }
             string worker = Path.Combine(root, "support", "ConnectionWorker.exe");
             if (!File.Exists(worker)) throw new IOException("桌面连接组件缺失，请重新安装完整工具包。");
