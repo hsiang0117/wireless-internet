@@ -51,7 +51,7 @@ namespace WirelessInternet
     internal sealed class ConnectionStartAttempt
     {
         public RuntimeState State, NewRelay;
-        public bool CreatedRelay, StateSaved, NewGuard, ReuseProtection;
+        public bool CreatedRelay, StateSaved, PhoneVpnStartAttempted, ReuseProtection;
         public string ReadyPath;
     }
 }

@@ -42,7 +42,7 @@ internal static class StartupRecoveryChecks
         RuntimeState NewState(string token)
         {
             return new RuntimeState { PhoneIdentity = "STARTUP_FIXTURE", WirelessSerial = "192.0.2.1:37123",
-                ProtectionSessionId = token, PhoneControlPath = "/data/local/tmp/codex-wireless-internet/" + token + "/control.sh",
+                ProtectionSessionId = token, ProtectionMode = "PcOnly",
                 RelayProcessId = 11, RelayStartTimeUtcTicks = "1", RelayPath = RelayPath,
                 WatchdogProcessId = 12, WatchdogStartTimeUtcTicks = "1", WatchdogPath = WorkerPath,
                 RelayHostProcessId = 13, RelayHostStartTimeUtcTicks = "1", RuntimeEngine = "CSharp",
@@ -82,7 +82,6 @@ internal static class StartupRecoveryChecks
         public override RuntimeCommandResult Run(string exe, string[] args, bool allowFailure = false, int timeoutMs = 8000, IDictionary<string, string> environment = null) { throw Trap(); }
         public override RuntimeCommandResult Adb(string[] args, bool allowFailure = false, int timeoutMs = 8000) { throw Trap(); }
         public override RuntimeCommandResult Gnirehtet(string[] args, bool allowFailure = false, int timeoutMs = 8000) { throw Trap(); }
-        public override RuntimeCommandResult Guard(RuntimeState state, string command, bool allowFailure = false, int timeoutMs = 8000) { throw Trap(); }
         public override bool PhoneVpnConnected(string serial) { throw Trap(); }
         public override Process GetOwnedRelay(RuntimeState state, bool pinHandle = false) { throw Trap(); }
         public override Process GetOwnedMonitor(RuntimeState state, bool pinHandle = false) { throw Trap(); }
@@ -113,6 +112,10 @@ internal static class StartupRecoveryChecks
             Case("dead session is checked twice and retired without phone control", delegate {
                 Fake context = new Fake(); ConnectionOperationResult result = Recover(context);
                 Require(result.Success && context.State == null && context.Deletes == 1 && context.Reads == 3 && context.Inspections == 2 && result.Stages.Contains(ConnectionStage.RemoveSession), "dead startup record was not safely retired");
+                Fake legacy = new Fake(); legacy.State.ProtectionMode = null;
+                legacy.State.PhoneControlPath = "/data/local/tmp/codex-wireless-internet/" + legacy.State.ProtectionSessionId + "/control.sh";
+                Require(Recover(legacy).Success && legacy.State == null && legacy.Deletes == 1 && legacy.Inspections == 2,
+                    "confirmed-dead legacy startup record was not retired");
             });
             Case("every active recorded resource is preserved", delegate {
                 for (int i = 0; i < 3; i++) { Fake context = new Fake(); context.Presence[i] = RecordedProcessPresence.OwnedAlive;

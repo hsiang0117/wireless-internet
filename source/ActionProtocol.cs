@@ -12,7 +12,7 @@ namespace WirelessInternet
         AcquireOperation, ValidateConfiguration, ResolveDevice, VerifyDevice,
         AcquireRelay, PrepareProtection, CommitSession, EstablishTunnel,
         StartMonitor, AwaitProtection, VerifyOwnership, StopPhoneVpn,
-        CancelPhoneGuard, StopMonitor, RemoveTunnel, StopRelay, RemoveSession,
+        CancelPhoneGuard, StopMonitor, RemoveTunnel, StopRelay, RemoveSession, // CancelPhoneGuard is reserved for wire v1 compatibility.
         DisconnectDevice, ReleaseOperation, Completed
     }
 
@@ -150,11 +150,11 @@ namespace WirelessInternet
                 case ConnectionStage.ResolveDevice: return "发现手机无线端点";
                 case ConnectionStage.VerifyDevice: return "连接并核验手机";
                 case ConnectionStage.AcquireRelay: return "准备电脑中继";
-                case ConnectionStage.PrepareProtection: return "准备手机失联保护";
+                case ConnectionStage.PrepareProtection: return "准备电脑链路监控";
                 case ConnectionStage.CommitSession: return "保存共享状态";
                 case ConnectionStage.EstablishTunnel: return "建立隧道与手机 VPN";
                 case ConnectionStage.StartMonitor: return "启动电脑保护监控";
-                case ConnectionStage.AwaitProtection: return "等待首次保护确认";
+                case ConnectionStage.AwaitProtection: return "等待首次链路确认";
                 case ConnectionStage.VerifyOwnership: return "检查共享进程";
                 case ConnectionStage.StopPhoneVpn: return "停止手机 VPN";
                 case ConnectionStage.CancelPhoneGuard: return "结束手机守护";

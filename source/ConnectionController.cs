@@ -49,6 +49,7 @@ namespace WirelessInternet
                 ValidateTransport(oldState);
                 if (oldState != null && oldState.RuntimeEngine != "CSharp")
                     throw new IOException("A legacy sharing session is recorded. Disconnect that session before starting the C# runtime; its monitor will not be replaced automatically.");
+                RequirePcOnlySession(oldState);
                 if (oldState != null && oldState.PhoneIdentity != identity)
                     throw new IOException("The recorded session belongs to a different phone. Stop that session before changing the binding.");
 
@@ -66,16 +67,16 @@ namespace WirelessInternet
                 RuntimeState logRecord = PrepareRelay(oldState, attempt);
                 attempt.State = CreateStartupState(logRecord, network, serial, identity);
                 trace.Move(ConnectionStage.PrepareProtection);
-                PrepareProtection(oldState, serial, timeout, attempt);
+                PrepareProtection(oldState, timeout, attempt);
                 trace.Move(ConnectionStage.CommitSession);
                 CommitStartupSession(attempt);
                 trace.Move(ConnectionStage.EstablishTunnel);
-                EstablishTunnel(attempt.State, serial, output);
+                EstablishTunnel(attempt, serial, output);
                 trace.Move(ConnectionStage.StartMonitor);
                 StartProtectionMonitor(attempt);
 
                 // Preserve the existing transaction boundary: the monitor must acquire
-                // this same mutex before acknowledging its first protected heartbeat.
+                // this same mutex before recording its first healthy PC observation.
                 trace.Move(ConnectionStage.ReleaseOperation);
                 IDisposable completedOperation = operation; operation = null;
                 completedOperation.Dispose();
@@ -84,14 +85,14 @@ namespace WirelessInternet
                 Report(output, "Wireless ADB tunnel and phone VPN are ready. The relay runs independently in the background.");
                 Report(output, "Keep phone Wi-Fi, hotspot and system Wireless debugging ON. Mobile data and both VPN restrictions may remain OFF.");
                 Report(output, "Click Disconnect before turning OFF Wireless debugging and the hotspot.");
-                Report(output, "Automatic disconnect protection is active: about " + attempt.State.ProtectionTimeoutSeconds + " seconds without a healthy heartbeat ends this sharing session.");
+                Report(output, "PC link monitoring is active: about " + attempt.State.ProtectionTimeoutSeconds + " seconds without a healthy connection ends the PC sharing session. After a disconnection or PC shutdown, manually close the phone VPN if it remains connected.");
                 return Finish(trace, 0, "Wireless sharing started.");
             }
             catch (Exception error)
             {
                 Report(output, "失败阶段 · " + ConnectionOperationTrace.Describe(trace.Current));
                 Report(output, "ERROR: " + error.Message);
-                CleanupFailedStart(attempt, output);
+                CleanupFailedStart(attempt, output, operation != null);
                 Report(output, "No VPN switches or network routes were changed.");
                 return Finish(trace, 1, error.Message);
             }
@@ -137,7 +138,7 @@ namespace WirelessInternet
             using (Process owned = context.GetOwnedRelay(logRecord))
             {
                 if (owned == null) throw new IOException("The tracked relay exited during startup.");
-                state = new RuntimeState { Transport = "NativeTls", RuntimeEngine = "CSharp", PhoneIdentity = identity,
+                state = new RuntimeState { Transport = "NativeTls", RuntimeEngine = "CSharp", ProtectionMode = "PcOnly", PhoneIdentity = identity,
                     RelayProcessId = owned.Id, RelayStartTimeUtcTicks = owned.StartTime.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture),
                     RelayPath = context.RelayPath, WatchdogPath = context.WorkerPath };
             }
@@ -147,29 +148,20 @@ namespace WirelessInternet
             return state;
         }
 
-        void PrepareProtection(RuntimeState oldState, string serial, int timeout, ConnectionStartAttempt attempt)
+        void PrepareProtection(RuntimeState oldState, int timeout, ConnectionStartAttempt attempt)
         {
             using (Process monitor = context.GetOwnedMonitor(oldState))
             {
-                if (context.ProtectionValid(oldState) && monitor != null)
-                {
-                    RuntimeCommandResult status = context.Guard(WithSerial(oldState, serial), "status", true);
-                    attempt.ReuseProtection = status.Success && AndroidProtocol.GuardActive(status.Text, oldState.ProtectionSessionId) && context.MonitorHeartbeatFresh(oldState);
-                }
+                attempt.ReuseProtection = oldState != null && oldState.ProtectionMode == "PcOnly" &&
+                    context.ProtectionValid(oldState) && monitor != null && context.MonitorHeartbeatFresh(oldState);
             }
             if (attempt.ReuseProtection) { CopyProtection(attempt.State, oldState); return; }
             RequireFile(context.WorkerPath);
             StopOwnedMonitor(oldState);
             string token = Guid.NewGuid().ToString("N");
-            string remoteDirectory = "/data/local/tmp/codex-wireless-internet/" + token;
             attempt.State.ProtectionSessionId = token; attempt.State.ProtectionTimeoutSeconds = timeout;
-            attempt.State.PhoneControlPath = remoteDirectory + "/control.sh";
-            context.Adb(new string[] { "-s", serial, "shell", "mkdir", "-p", remoteDirectory });
-            using (PhoneGuardLease phoneGuard = context.ExtractPhoneGuard())
-                context.Adb(new string[] { "-s", serial, "push", phoneGuard.Path, attempt.State.PhoneControlPath });
-            attempt.NewGuard = true;
-            RuntimeCommandResult armed = context.Guard(attempt.State, "arm");
-            if (armed.Text != "ARMED " + token) throw new IOException("The independent phone disconnect guard did not start.");
+            attempt.State.ProtectionMode = "PcOnly";
+            attempt.State.PhoneControlPath = null;
         }
 
         void CommitStartupSession(ConnectionStartAttempt attempt)
@@ -183,8 +175,9 @@ namespace WirelessInternet
             }
         }
 
-        void EstablishTunnel(RuntimeState state, string serial, Action<string> output)
+        void EstablishTunnel(ConnectionStartAttempt attempt, string serial, Action<string> output)
         {
+            RuntimeState state = attempt.State;
             bool listening = false;
             for (int check = 0; check < 15; check++)
             {
@@ -193,7 +186,13 @@ namespace WirelessInternet
             }
             if (!listening) throw new IOException("The relay did not open its listening port. Retry Start or inspect the live console.");
             context.Gnirehtet(new string[] { "tunnel", serial });
-            if (!context.PhoneVpnConnected(serial)) Report(output, context.Gnirehtet(new string[] { "start", serial }).Text);
+            if (!context.PhoneVpnConnected(serial))
+            {
+                // A failed command can still have reached Android; scope any rollback
+                // to a VPN start attempted by this operation, never a reused VPN.
+                attempt.PhoneVpnStartAttempted = true;
+                Report(output, context.Gnirehtet(new string[] { "start", serial }).Text);
+            }
             bool connected = false;
             for (int check = 0; check < 15; check++)
             {
@@ -203,8 +202,6 @@ namespace WirelessInternet
             RuntimeCommandResult reverse = context.Adb(new string[] { "-s", serial, "reverse", "--list" });
             if (!connected || !AndroidProtocol.ReverseReady(reverse.Text) || !context.PhoneVpnConnected(serial))
                 throw new IOException("The wireless tunnel or phone VPN is not ready. Approve the phone VPN request if shown.");
-            RuntimeCommandResult beat = context.Guard(state, "beat");
-            if (beat.Text != "OK " + state.ProtectionSessionId) throw new IOException("The phone guard refused the startup heartbeat.");
         }
 
         void StartProtectionMonitor(ConnectionStartAttempt attempt)
@@ -239,23 +236,35 @@ namespace WirelessInternet
                         if (latest == null) throw new IOException("The sharing session ended during protection startup.");
                         if (latest.ProtectionSessionId != attempt.State.ProtectionSessionId)
                             throw new IOException("Another sharing session replaced this startup.");
+                        RequirePcOnlySession(latest);
                         using (Process monitor = context.GetOwnedMonitor(latest))
-                            if (monitor == null) throw new IOException("The monitor exited before acknowledging its first heartbeat.");
+                            if (monitor == null) throw new IOException("The PC monitor exited before confirming the connection.");
                         if (context.MonitorHeartbeatFresh(latest)) { attempt.State = latest; acknowledged = true; }
                     }
                 }
                 if (acknowledged) break;
                 context.Sleep(200);
             }
-            if (!acknowledged) throw new IOException("The protection monitor did not acknowledge a healthy heartbeat in time.");
+            if (!acknowledged) throw new IOException("The PC monitor did not confirm a healthy connection in time.");
         }
 
-        void CleanupFailedStart(ConnectionStartAttempt attempt, Action<string> output)
+        void CleanupFailedStart(ConnectionStartAttempt attempt, Action<string> output, bool operationHeld)
         {
-            // Keep the original cleanup protocol, including the phone's own token
-            // check when a failure occurs after the PC operation lock was released.
-            if (attempt.NewGuard && context.ProtectionValid(attempt.State))
-                try { context.Guard(attempt.State, "stop", true); } catch { }
+            if (attempt.PhoneVpnStartAttempted && attempt.StateSaved)
+            {
+                try
+                {
+                    if (operationHeld) StopAttemptedPhoneVpn(attempt, output);
+                    else
+                    {
+                        // Another Start can reuse the same session token after this
+                        // lease ends. An old failure must never stop that newer VPN.
+                        Report(output, "The startup operation lock was released; the recorded session and phone VPN are retained. Use Disconnect or close the phone VPN manually if needed.");
+                    }
+                }
+                catch (Exception cleanup)
+                { Report(output, "Phone VPN cleanup was not confirmed: " + cleanup.Message + " Close it manually if it remains connected."); }
+            }
             if (attempt.CreatedRelay && !attempt.StateSaved && attempt.NewRelay != null)
             {
                 try
@@ -267,6 +276,24 @@ namespace WirelessInternet
             }
             else if (attempt.CreatedRelay && attempt.StateSaved)
                 Report(output, "The recorded relay is retained for recovery. Keep both phone VPN restrictions OFF and use Disconnect.");
+        }
+
+        void StopAttemptedPhoneVpn(ConnectionStartAttempt attempt, Action<string> output)
+        {
+            RuntimeState latest = context.ReadState();
+            if (latest == null || latest.ProtectionSessionId != attempt.State.ProtectionSessionId ||
+                latest.ProtectionMode != "PcOnly" || latest.PhoneIdentity != attempt.State.PhoneIdentity ||
+                !context.ProtectionValid(latest))
+            {
+                Report(output, "The sharing session changed; startup cleanup left the phone VPN untouched.");
+                return;
+            }
+            using (Process relay = context.GetOwnedRelay(latest))
+                if (relay == null) throw new IOException("The recorded relay ownership could not be confirmed.");
+            devices.VerifyPhone(latest.WirelessSerial, latest.PhoneIdentity, output);
+            devices.VerifyRestrictionsOff(latest.WirelessSerial, output);
+            devices.VerifyRuntimeRestrictionsOff(latest.WirelessSerial);
+            StopPhoneVpn(latest.WirelessSerial, output);
         }
 
         ConnectionOperationResult Finish(ConnectionOperationTrace trace, int exitCode, string message)
@@ -370,6 +397,7 @@ namespace WirelessInternet
                     trace.Move(ConnectionStage.VerifyOwnership);
                     throw new IOException("无法确认旧会话资源，已保留会话记录。");
                 }
+                RequirePcOnlySession(state);
                 Dictionary<string, object> configuration = ReadConfiguration();
                 trace.Move(ConnectionStage.ResolveDevice);
                 string serial = ExistingOrDiscoveredSerial(configuration, state);
@@ -383,8 +411,6 @@ namespace WirelessInternet
                 int relayId = OwnedRelayId(state);
                 trace.Move(ConnectionStage.StopPhoneVpn);
                 StopPhoneVpn(serial, output);
-                trace.Move(ConnectionStage.CancelPhoneGuard);
-                if (context.ProtectionValid(state)) context.Guard(WithSerial(state, serial), "cancel");
                 trace.Move(ConnectionStage.StopMonitor);
                 StopOwnedMonitor(state);
                 trace.Move(ConnectionStage.RemoveTunnel);
@@ -466,6 +492,7 @@ namespace WirelessInternet
                     Dictionary<string, object> configuration = ReadConfiguration();
                     RuntimeState state = context.ReadState();
                     ValidateTransport(state);
+                    RequirePcOnlySession(state);
                     string serial = ExistingOrDiscoveredSerial(configuration, state);
                     devices.VerifyPhone(serial, Get(configuration, "PhoneIdentity"), output);
                     int relayId = OwnedRelayId(state);
@@ -475,9 +502,7 @@ namespace WirelessInternet
                         throw new IOException("The wireless ADB tunnel, relay connection or phone VPN is not ready.");
                     using (Process monitor = context.GetOwnedMonitor(state))
                         if (!context.ProtectionValid(state) || monitor == null || !context.MonitorHeartbeatFresh(state))
-                            throw new IOException("The disconnect monitor does not have a recent acknowledged heartbeat.");
-                    RuntimeCommandResult guard = context.Guard(WithSerial(state, serial), "status");
-                    if (!AndroidProtocol.GuardActive(guard.Text, state.ProtectionSessionId)) throw new IOException("The phone disconnect guard is not active.");
+                            throw new IOException("The PC monitor does not have a recent healthy connection check.");
                     Report(output, "Tracked relay PID: " + relayId + "; phone VPN connected; protection monitor PID: " + state.WatchdogProcessId + ".");
                     Report(output, "Read-only check completed. No VPN switches, relay processes or routes were changed.");
                     return 0;
@@ -519,6 +544,11 @@ namespace WirelessInternet
         {
             if (state != null && state.Transport != "NativeTls") throw new IOException("An older non-native sharing session is recorded. Stop it before switching modes.");
         }
+        static void RequirePcOnlySession(RuntimeState state)
+        {
+            if (state != null && (state.ProtectionMode != "PcOnly" || !String.IsNullOrEmpty(state.PhoneControlPath)))
+                throw new IOException("An older phone-guard session is recorded. Disconnect it with the original program before using this version; its phone guard will not be replaced or cancelled automatically.");
+        }
         static int ProtectionTimeout(Dictionary<string, object> configuration)
         {
             int timeout = 30;
@@ -544,13 +574,6 @@ namespace WirelessInternet
             if (value == null) throw new IOException("The relay ownership record is invalid.");
             return value;
         }
-        static RuntimeState WithSerial(RuntimeState source, string serial)
-        {
-            if (source == null) return null;
-            // The state is a local snapshot under the operation mutex, never a shared monitor object.
-            source.WirelessSerial = serial;
-            return source;
-        }
         static void CopyLogRecord(RuntimeState target, RuntimeState source)
         {
             if (source == null) return;
@@ -560,7 +583,8 @@ namespace WirelessInternet
         static void CopyProtection(RuntimeState target, RuntimeState source)
         {
             target.ProtectionSessionId = source.ProtectionSessionId; target.ProtectionTimeoutSeconds = source.ProtectionTimeoutSeconds;
-            target.PhoneControlPath = source.PhoneControlPath; target.WatchdogProcessId = source.WatchdogProcessId;
+            target.ProtectionMode = source.ProtectionMode; target.PhoneControlPath = source.PhoneControlPath;
+            target.WatchdogProcessId = source.WatchdogProcessId;
             target.WatchdogStartTimeUtcTicks = source.WatchdogStartTimeUtcTicks; target.MonitorHeartbeatQpcTicks = source.MonitorHeartbeatQpcTicks;
             target.WatchdogPath = source.WatchdogPath;
         }

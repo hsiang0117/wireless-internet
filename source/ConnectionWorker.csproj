@@ -57,7 +57,6 @@
     <Compile Include="ConnectionController.cs" />
     <Compile Include="ConnectionOperation.cs" />
     <Compile Include="WatchdogController.cs" />
-    <Compile Include="PhoneGuardSource.cs" />
     <Compile Include="ProcessExecution.cs" />
     <None Include="App.config" />
     <None Include="app.manifest" />

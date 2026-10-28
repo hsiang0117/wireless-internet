@@ -222,7 +222,7 @@ namespace WirelessInternet
             phoneInfo.Controls.Add(_phone);
             phoneInfo.Controls.Add(_endpoint);
             statusLayout.Controls.Add(phoneInfo, 1, 0);
-            _protection = MakeLabel("失联保护\n等待会话", 9F, MutedColor, FontStyle.Regular);
+            _protection = MakeLabel("电脑链路监控\n等待会话", 9F, MutedColor, FontStyle.Regular);
             _protection.Dock = DockStyle.Fill;
             _protection.TextAlign = ContentAlignment.MiddleRight;
             statusLayout.Controls.Add(_protection, 2, 0);
@@ -629,19 +629,19 @@ namespace WirelessInternet
             string protectionTimeout = (value.ProtectionTimeoutSeconds > 0 ? value.ProtectionTimeoutSeconds : 30).ToString(CultureInfo.InvariantCulture);
             if (value.HasSession && value.ProtectionState == ProtectionState.Healthy)
             {
-                _protection.Text = "● " + protectionTimeout + " 秒失联保护已启用\n心跳 " + FormatAge(value.HeartbeatAgeSeconds) + " 前";
+                _protection.Text = "● 电脑 " + protectionTimeout + " 秒超时清理\n链路检查 " + FormatAge(value.HeartbeatAgeSeconds) + " 前";
                 _protection.ForeColor = AccentColor;
             }
             else if (value.HasSession)
             {
-                _protection.Text = (value.ProtectionState == ProtectionState.Degraded ? "● 失联保护异常" :
-                    value.ProtectionState == ProtectionState.Inactive ? "● 失联保护未启用" : "● 失联保护待确认") +
-                    "\n心跳 " + FormatAge(value.HeartbeatAgeSeconds) + " 前";
+                _protection.Text = (value.ProtectionState == ProtectionState.Degraded ? "● 电脑链路监控异常" :
+                    value.ProtectionState == ProtectionState.Inactive ? "● 电脑链路监控未启用" : "● 电脑链路监控待确认") +
+                    "\n链路检查 " + FormatAge(value.HeartbeatAgeSeconds) + " 前";
                 _protection.ForeColor = Color.FromArgb(255, 193, 99);
             }
             else
             {
-                _protection.Text = protectionTimeout + " 秒失联保护\n随共享会话自动启用";
+                _protection.Text = "电脑 " + protectionTimeout + " 秒超时清理\n手机 VPN 异常时请手动关闭";
                 _protection.ForeColor = MutedColor;
             }
             ulong total = UInt64.MaxValue - value.DownloadBytes < value.UploadBytes ? UInt64.MaxValue : value.DownloadBytes + value.UploadBytes;
@@ -852,7 +852,7 @@ namespace WirelessInternet
                 return;
             }
             // Windows may terminate us during shutdown. Do not hide or indefinitely veto shutdown;
-            // the existing phone-local timeout remains independent of this GUI.
+            // shutdown cleanup is best effort; the phone VPN may need manual closure.
             if (!_allowClose && !_preview && !_actionBusy) StartShutdownStop();
             _operations.BeginClosing();
             _timer.Stop();
@@ -881,7 +881,7 @@ namespace WirelessInternet
         private void StartShutdownStop()
         {
             // Start synchronously so Windows cannot end the UI before a queued thread gets to run.
-            // Do not wait or veto system shutdown; the phone-local guard also survives GUI termination.
+            // Do not wait or veto system shutdown. No phone-local guard is installed.
             try
             {
                 File.GetAttributes(Path.Combine(_root, "state", "wireless-session.json"));

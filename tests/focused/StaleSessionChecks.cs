@@ -40,7 +40,7 @@ internal static class StaleSessionChecks
         RuntimeState NewState(string token)
         {
             return new RuntimeState { PhoneIdentity = "STALE_FIXTURE", WirelessSerial = "192.0.2.1:37123",
-                ProtectionSessionId = token, PhoneControlPath = "/data/local/tmp/codex-wireless-internet/" + token + "/control.sh",
+                ProtectionSessionId = token, ProtectionMode = "PcOnly",
                 RelayProcessId = 11, RelayStartTimeUtcTicks = "1", RelayPath = RelayPath,
                 WatchdogProcessId = 12, WatchdogStartTimeUtcTicks = "1", WatchdogPath = WorkerPath,
                 RelayHostProcessId = 13, RelayHostStartTimeUtcTicks = "1", RuntimeEngine = "CSharp" };
@@ -93,6 +93,11 @@ internal static class StaleSessionChecks
                 Require(result.Success && context.State == null && context.Deletes == 1 && context.Inspections == 2, "stale session not rechecked and removed");
                 Require(context.ConfigReads == 0 && context.AdbCalls == 0 && result.Stages.Contains(ConnectionStage.RemoveSession), "offline cleanup reached a phone");
                 Require(result.Message.Contains("手机"), "local-only result omitted phone uncertainty");
+                Fake legacy = new Fake(); legacy.State.ProtectionMode = null;
+                legacy.State.PhoneControlPath = "/data/local/tmp/codex-wireless-internet/" + FirstToken + "/control.sh";
+                Require(Stop(legacy).Success && legacy.State == null && legacy.Deletes == 1 && legacy.Inspections == 2,
+                    "confirmed-dead legacy record could not be retired");
+                Require(legacy.ConfigReads == 0 && legacy.AdbCalls == 0, "legacy stale cleanup contacted a phone");
             });
             Case("each live resource retains the normal online path", delegate {
                 for (int resource = 0; resource < 3; resource++) {

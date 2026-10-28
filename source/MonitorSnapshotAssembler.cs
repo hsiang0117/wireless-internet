@@ -87,8 +87,8 @@ namespace WirelessInternet
                 if (lastSnapshot != null && lastSnapshot.HasSession)
                 {
                     snap.StatusText = "已断开";
-                    snap.Detail = "本次共享已结束。流量保留至下一次连接，关闭界面不会影响后台共享。";
-                    Add(snap, "状态", "共享会话已结束，已停止网速采样。", "INFO");
+                    snap.Detail = "电脑共享会话已结束。若为异常断线，请在手机手动关闭 gnirehtet VPN。";
+                    Add(snap, "状态", "电脑共享会话已结束，已停止网速采样；手机 VPN 状态请在手机确认。", "INFO");
                 }
                 logPipe = ""; logCursor = 0;
                 traffic.Reset(false); traffic.ForgetEndpoint();
@@ -105,7 +105,7 @@ namespace WirelessInternet
                 snap.TelemetryState = TelemetryState.Unavailable;
                 snap.DownloadBytes = snap.UploadBytes = 0; snap.StartedAt = null;
                 lastConnections.Clear(); logPipe = ""; logCursor = 0;
-                Add(snap, "会话", "已接管受保护的无线共享会话 " + session.Substring(0, 8) + "；关闭本窗口后仍可继续共享。", "INFO");
+                Add(snap, "会话", "已接管无线共享会话 " + session.Substring(0, 8) + "；关闭本窗口后仍可继续共享。异常断线后请在手机手动关闭 VPN。", "INFO");
             }
             traffic.BindEndpoint(state, snap);
             snap.HasSession = true; snap.SessionId = session; snap.Phone = state.PhoneIdentity; snap.Endpoint = state.WirelessSerial;
@@ -155,10 +155,10 @@ namespace WirelessInternet
             snap.StatusText = snap.ConnectionState == ConnectionState.Connected ?
                 (snap.ProtectionState == ProtectionState.Healthy ? "已连接" : "已连接 · 保护异常") :
                 snap.ConnectionState == ConnectionState.Unknown ? "连接状态待确认" : "连接恢复中";
-            snap.Detail = snap.Healthy ? "手机 VPN 在线 · 失联保护约 " + snap.ProtectionTimeoutSeconds + " 秒 · 最近心跳 " +
+            snap.Detail = snap.Healthy ? "手机 VPN 在线 · 电脑超时清理约 " + snap.ProtectionTimeoutSeconds + " 秒 · 最近链路检查 " +
                 snap.HeartbeatAgeSeconds.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + " 秒前" :
-                snap.ConnectionState == ConnectionState.Connected ? "共享链路可用，失联保护状态异常，请查看保护状态并重新连接。" :
-                "正在核实手机与保护心跳；持续失联约 " + snap.ProtectionTimeoutSeconds + " 秒后结束本次共享。";
+                snap.ConnectionState == ConnectionState.Connected ? "共享链路可用，电脑监控状态异常；异常断线后手机 VPN 可能需要手动关闭。" :
+                "正在核实共享链路；持续失联约 " + snap.ProtectionTimeoutSeconds + " 秒后清理电脑会话，手机 VPN 请手动确认。";
             if (lastStatus != snap.StatusText)
             {
                 Add(snap, "状态", snap.StatusText + " · " + snap.Detail, snap.Healthy ? "INFO" : "WARN"); lastStatus = snap.StatusText;

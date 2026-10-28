@@ -24,21 +24,10 @@ namespace WirelessInternet
     }
     public class RuntimeState : SessionRecord
     {
-        public string Transport = "NativeTls", ConnectEndpoint, RelayHostStartTimeUtcTicks, PhoneControlPath;
+        public string Transport = "NativeTls", ConnectEndpoint, RelayHostStartTimeUtcTicks, PhoneControlPath, ProtectionMode;
         public int RelayHostProcessId;
         [ScriptIgnore] public Dictionary<string, object> RawFields;
         public RuntimeState() { ProtectionTimeoutSeconds = 30; }
-    }
-    public sealed class PhoneGuardLease : IDisposable
-    {
-        public readonly string Path;
-        readonly string directory;
-        internal PhoneGuardLease(string directory, string path) { this.directory = directory; Path = path; }
-        public void Dispose()
-        {
-            try { File.Delete(Path); } catch { }
-            try { Directory.Delete(directory, false); } catch { }
-        }
     }
     public sealed class RuntimeMutexLease : IDisposable
     {
@@ -121,9 +110,13 @@ namespace WirelessInternet
         }
         public virtual bool ProtectionValid(RuntimeState state)
         {
-            return state != null && Regex.IsMatch(state.ProtectionSessionId ?? "", "^[0-9a-f]{32}$") &&
-                state.PhoneControlPath == "/data/local/tmp/codex-wireless-internet/" + state.ProtectionSessionId + "/control.sh" &&
-                state.ProtectionTimeoutSeconds >= 15 && state.ProtectionTimeoutSeconds <= 120;
+            if (state == null || !Regex.IsMatch(state.ProtectionSessionId ?? "", "^[0-9a-f]{32}$") ||
+                state.ProtectionTimeoutSeconds < 15 || state.ProtectionTimeoutSeconds > 120) return false;
+            if (state.ProtectionMode == "PcOnly") return String.IsNullOrEmpty(state.PhoneControlPath);
+            // Legacy records remain readable for positively-dead startup recovery.
+            // Live legacy sessions must be disconnected with their original version.
+            return String.IsNullOrEmpty(state.ProtectionMode) &&
+                state.PhoneControlPath == "/data/local/tmp/codex-wireless-internet/" + state.ProtectionSessionId + "/control.sh";
         }
         public static bool ValidSerial(string serial)
         {
@@ -131,12 +124,6 @@ namespace WirelessInternet
             int colon = serial.LastIndexOf(':'), port; System.Net.IPAddress address;
             return Int32.TryParse(serial.Substring(colon + 1), out port) && port > 0 && port <= 65535 &&
                 System.Net.IPAddress.TryParse(serial.Substring(0, colon), out address) && address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork;
-        }
-        public virtual RuntimeCommandResult Guard(RuntimeState state, string command, bool allowFailure = false, int timeoutMs = 8000)
-        {
-            if (!ProtectionValid(state) || !ValidSerial(state.WirelessSerial) || !Regex.IsMatch(command, "^(?:arm|beat|cancel|stop|status)$")) throw new IOException("手机保护会话无效。");
-            return Adb(new string[] { "-s", state.WirelessSerial, "shell", "sh", state.PhoneControlPath, command, state.ProtectionSessionId,
-                state.ProtectionTimeoutSeconds.ToString(CultureInfo.InvariantCulture) }, allowFailure, timeoutMs);
         }
         public virtual bool PhoneVpnConnected(string serial)
         {
@@ -178,14 +165,6 @@ namespace WirelessInternet
             state.WifiInterfaceGuid = link.WifiInterfaceGuid; state.EthernetInterfaceGuid = link.EthernetInterfaceGuid;
             state.WifiInterfaceAlias = link.WifiInterfaceAlias; state.EthernetInterfaceAlias = link.EthernetInterfaceAlias;
             state.PhoneGateway = link.PhoneGateway; state.WifiRouteCost = link.WifiRouteCost; state.EthernetRouteCost = link.EthernetRouteCost;
-        }
-        public virtual PhoneGuardLease ExtractPhoneGuard()
-        {
-            string directory = Path.Combine(Path.GetTempPath(), "WirelessInternet-guard-" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(directory);
-            string file = Path.Combine(directory, "control.sh");
-            try { File.WriteAllText(file, PhoneGuardSource.Text.Replace("\r\n", "\n"), new UTF8Encoding(false)); return new PhoneGuardLease(directory, file); }
-            catch { try { Directory.Delete(directory, false); } catch { } throw; }
         }
     }
     public static class RuntimeTcp

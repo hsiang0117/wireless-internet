@@ -1,12 +1,12 @@
 {
-  "Version": "1.9.2",
+  "Version": "1.10.0",
   "SourceFiles": [
     "AppForm.cs", "Backend.cs", "ActionProtocol.cs", "WorkerActionClient.cs", "ConnectionController.cs", "MemoryLog.cs",
     "SharedDataModels.cs", "ConfigurationDocument.cs",
     "AndroidProtocol.cs", "AndroidDeviceClient.cs", "RuntimeSessionStore.cs", "OwnedProcessManager.cs", "ConnectionOperation.cs",
     "MonitoringModels.cs", "SystemSessionObservationSource.cs", "PhoneTrafficTracker.cs", "MonitorSnapshotAssembler.cs",
     "ConsoleLogView.cs", "DashboardControls.cs", "UiVisualStyle.cs",
-    "NativeNetwork.cs", "PhoneGuardSource.cs", "ProcessExecution.cs", "Program.cs",
+    "NativeNetwork.cs", "ProcessExecution.cs", "Program.cs",
     "RelayLogHost.cs", "RuntimeCommon.cs", "SessionStatus.cs", "SetupBackend.cs",
     "SetupForm.cs", "UiDpi.cs", "UiOperationCoordinator.cs", "WatchdogController.cs", "WorkerHost.cs",
     "App.config", "app.manifest", "WirelessInternet.csproj", "ConnectionWorker.csproj",

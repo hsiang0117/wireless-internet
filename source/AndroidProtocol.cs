@@ -55,9 +55,6 @@ namespace WirelessInternet
         public static bool ReverseReady(string text)
         { return Regex.IsMatch(text ?? String.Empty, @"localabstract:gnirehtet\s+tcp:31416"); }
 
-        public static bool GuardActive(string text, string token)
-        { return Regex.IsMatch(text ?? String.Empty, "^ACTIVE " + Regex.Escape(token ?? String.Empty) + " "); }
-
         public static OwnerVpnRestrictionState OwnerVpnRestrictions(string dump)
         {
             Match owner = Regex.Match(dump, @"(?ms)^  0:[^\r\n]*\r?\n(?<body>.*?)(?=^  \d+:|\z)");

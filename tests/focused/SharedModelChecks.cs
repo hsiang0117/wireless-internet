@@ -27,7 +27,7 @@ internal static class SharedModelChecks
         string token = new string('a', 32);
         return new RuntimeState {
             PhoneIdentity = "MODEL_FIXTURE", WirelessSerial = "192.0.2.5:37123", ProtectionSessionId = token,
-            PhoneControlPath = "/data/local/tmp/codex-wireless-internet/" + token + "/control.sh",
+            ProtectionMode = "PcOnly",
             RelayPath = context.RelayPath, RelayStartTimeUtcTicks = "639000012345678901", RelayProcessId = 123,
             RelayLogPipe = "WirelessInternet.Log.fixture", LogMode = "MemoryOnly",
             WatchdogStartTimeUtcTicks = "639000012345678902", MonitorHeartbeatQpcTicks = "9007199254740993",
@@ -113,6 +113,14 @@ internal static class SharedModelChecks
                 Reject(delegate { context.ReadState(); }, "worker accepted mismatched control path");
                 fields = Fields(); fields["ProtectionTimeoutSeconds"] = 121; WriteState(fields);
                 Reject(delegate { context.ReadState(); }, "worker accepted invalid protection duration");
+                fields = Fields(); fields["ProtectionMode"] = "Unrecognized"; WriteState(fields);
+                Reject(delegate { context.ReadState(); }, "worker accepted unknown protection mode");
+                RuntimeState legacy = State(); legacy.ProtectionMode = null;
+                legacy.PhoneControlPath = "/data/local/tmp/codex-wireless-internet/" + legacy.ProtectionSessionId + "/control.sh";
+                context.WriteState(legacy);
+                Require(context.ReadState().PhoneControlPath == legacy.PhoneControlPath, "legacy recovery metadata no longer readable");
+                context.WriteState(State());
+                Require(context.ReadState().ProtectionMode == "PcOnly" && String.IsNullOrEmpty(context.ReadState().PhoneControlPath), "PC-only state should not require phone script");
             });
             Case("worker-validation-override-remains-effective", delegate {
                 WriteState(Fields()); RejectingContext rejecting = new RejectingContext(root);

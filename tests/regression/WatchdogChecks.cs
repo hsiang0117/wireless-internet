@@ -18,6 +18,7 @@ internal static class WatchdogChecks
     static readonly string Executable = typeof(WatchdogChecks).Assembly.Location;
     static readonly List<object> Results = new List<object>();
     static int assertions, failures;
+    static bool focused;
 
     static int Main(string[] arguments)
     {
@@ -29,189 +30,107 @@ internal static class WatchdogChecks
             return 0;
         }
 
-        Case("strict OK renews beyond initial deadline and writes QPC heartbeat", delegate(FakeContext c) {
+        focused = arguments.Length == 1 && arguments[0] == "--pc-only";
+        Case("complete chain checks renew beyond initial deadline without phone guard", delegate(FakeContext c) {
             c.QuitAfterHeartbeatWrites = 8;
-            Equal(0, Run(c), "run result");
-            Equal(8, c.HeartbeatWrites, "heartbeat writes");
-            Equal(8, c.Beats, "strict acknowledgements");
-            Equal(35.0, c.HeartbeatTimes.Last(), "renewal past initial 30 seconds");
-            Equal(0, c.Deletes, "no healthy cleanup");
-            Equal(0, c.Stops, "no healthy phone stop");
-            Check(c.Children[0].IsAlive, "healthy relay remains alive");
-            Check(c.History.All(s => s.RawFields != null && (string)s.RawFields["unknownTestField"] == "preserved"), "unknown state data survives heartbeat writes");
+            Equal(0, Run(c), "run result"); Equal(8, c.HeartbeatWrites, "PC health writes");
+            Equal(35.0, c.HeartbeatTimes.Last(), "renewal past thirty seconds");
+            Equal(0, c.Deletes, "healthy state retained"); Equal(0, c.Stops, "healthy phone retained");
+            Check(c.Children[0].IsAlive, "healthy relay retained");
+            Check(c.History.All(s => s.ProtectionMode == "PcOnly" && String.IsNullOrEmpty(s.PhoneControlPath)), "no phone guard metadata");
+            Check(c.History.All(s => s.RawFields != null && (string)s.RawFields["unknownTestField"] == "preserved"), "unknown fields retained");
         });
-
-        Case("REFUSED acknowledgement is immediately terminal", delegate(FakeContext c) {
-            c.BeatReply = delegate { return Reply(1, "REFUSED " + Token + " EXPIRED"); };
-            Equal(0, Run(c), "run result");
-            Equal(1, c.Beats, "one terminal beat");
-            Equal(0, c.HeartbeatWrites, "REFUSED cannot renew");
-            Equal(0.0, c.Seconds, "immediate cleanup");
-            AssertCleaned(c);
+        Case("disconnected VPN cannot renew and expires after thirty seconds", delegate(FakeContext c) {
+            c.VpnConnected = false;
+            Equal(0, Run(c), "run result"); Equal(0, c.HeartbeatWrites, "failed VPN check never renews");
+            Equal(30.0, c.Seconds, "monotonic deadline"); AssertCleaned(c);
         });
-
-        Case("empty acknowledgement never renews and expires at 30 seconds", delegate(FakeContext c) {
-            c.BeatReply = delegate { return Reply(0, ""); };
-            Equal(0, Run(c), "run result");
-            Equal(6, c.Beats, "five-second unhealthy sweeps");
-            Equal(0, c.HeartbeatWrites, "empty acknowledgement cannot renew");
-            Equal(30.0, c.Seconds, "monotonic deadline");
-            AssertCleaned(c);
+        Case("late successful full-chain observation cannot revive expired monitor", delegate(FakeContext c) {
+            c.OnVpnRead = delegate { c.Advance(31); c.OnVpnRead = null; };
+            Equal(0, Run(c), "run result"); Equal(0, c.HeartbeatWrites, "late observation never renews");
+            Equal(31.0, c.Seconds, "late observation clock"); AssertCleaned(c);
         });
-
-        Case("late OK acknowledgement cannot revive an expired monitor", delegate(FakeContext c) {
-            c.BeatReply = delegate { c.Advance(31); return Reply(0, "OK " + Token); };
-            Equal(0, Run(c), "run result");
-            Equal(1, c.Beats, "late answer is terminal");
-            Equal(0, c.HeartbeatWrites, "no late heartbeat persistence");
-            Equal(31.0, c.Seconds, "late-response clock");
-            AssertCleaned(c);
+        Case("offline ADB cleans PC resources without claiming phone VPN stopped", delegate(FakeContext c) {
+            c.PhoneOffline = true;
+            Equal(0, Run(c), "run result"); Equal(0, c.HeartbeatWrites, "offline phone cannot renew");
+            Equal(30.0, c.Seconds, "thirty second PC deadline"); Equal(0, c.Stops, "no unverified phone STOP");
+            Equal(1, c.Deletes, "own PC record retired"); Check(!c.Children[0].IsAlive, "owned PC relay stopped");
         });
-
         Case("same reverse name with another destination is never rebound", delegate(FakeContext c) {
-            c.ReverseDestination = "tcp:31337";
-            Equal(0, Run(c), "run result");
-            Equal(0, c.ReverseRepairs, "no conflicting reverse overwrite");
-            Equal(0, c.Beats, "conflict prevents renewal");
-            Equal(30.0, c.Seconds, "conflict expires normally");
-            AssertCleaned(c);
+            c.ReverseDestination = "tcp:31337"; Equal(0, Run(c), "run result");
+            Equal(0, c.ReverseRepairs, "conflicting destination retained"); Equal(0, c.HeartbeatWrites, "conflict never renews");
+            Equal(30.0, c.Seconds, "conflict expires"); AssertCleaned(c);
         });
-
-        Case("missing owned reverse uses no-rebind and is verified", delegate(FakeContext c) {
-            c.ReverseDestination = null;
-            c.QuitAfterHeartbeatWrites = 8;
-            Equal(0, Run(c), "run result");
-            Equal(1, c.ReverseRepairs, "one safe reverse repair");
-            Equal("tcp:31416", c.ReverseDestination, "exact reverse destination");
-            Equal(8, c.HeartbeatWrites, "healthy after repair");
-            Check(c.Children[0].IsAlive, "repair retains relay");
+        Case("missing reverse uses no-rebind repair and full revalidation", delegate(FakeContext c) {
+            c.ReverseDestination = null; c.QuitAfterHeartbeatWrites = 8;
+            Equal(0, Run(c), "run result"); Equal(1, c.ReverseRepairs, "one repair");
+            Equal("tcp:31416", c.ReverseDestination, "exact destination"); Equal(8, c.HeartbeatWrites, "healthy after repair");
+            Check(c.Children[0].IsAlive, "relay retained");
         });
-
-        Case("changed session token exits without cleanup", delegate(FakeContext c) {
-            c.State.ProtectionSessionId = OtherToken;
-            AssertReplacementExit(c);
-        });
-
-        Case("changed monitor PID exits without cleanup", delegate(FakeContext c) {
-            c.State.WatchdogProcessId++;
-            AssertReplacementExit(c);
-        });
-
+        Case("changed session token exits without cleanup", delegate(FakeContext c) { c.State.ProtectionSessionId = OtherToken; AssertReplacementExit(c); });
+        Case("changed monitor PID exits without cleanup", delegate(FakeContext c) { c.State.WatchdogProcessId++; AssertReplacementExit(c); });
         Case("changed monitor start ticks exits without cleanup", delegate(FakeContext c) {
             c.State.WatchdogStartTimeUtcTicks = (Int64.Parse(c.State.WatchdogStartTimeUtcTicks, CultureInfo.InvariantCulture) + 1).ToString(CultureInfo.InvariantCulture);
             AssertReplacementExit(c);
         });
-
-        Case("session replacement before beat prevents phone mutation", delegate(FakeContext c) {
+        Case("session replacement before health write prevents stale cleanup", delegate(FakeContext c) {
+            c.BeforeRead = delegate { if (c.VpnReads != 0) c.State.ProtectionSessionId = OtherToken; };
+            Equal(0, Run(c), "run result"); Equal(0, c.HeartbeatWrites, "replacement not renewed");
+            Equal(0, c.Stops, "new phone session retained"); Equal(0, c.Deletes, "new record retained");
+            Check(c.Children[0].IsAlive, "new relay retained");
+        });
+        Case("expired cleanup retries busy mutex and never restarts health checks", delegate(FakeContext c) {
+            c.VpnConnected = false; bool changed = false;
             c.BeforeRead = delegate {
-                if (c.VpnReads != 0) c.State.ProtectionSessionId = OtherToken;
+                if (!changed && c.Seconds >= 30) { changed = true; c.BusyMutexAttempts = 2; }
             };
-            Equal(0, Run(c), "run result");
-            Equal(0, c.Beats, "recheck rejects beat");
-            Equal(0, c.Stops, "replacement phone is not stopped");
-            Equal(0, c.Deletes, "replacement state remains");
-            Check(c.Children[0].IsAlive, "replacement relay remains");
+            Equal(0, Run(c), "run result"); Equal(2, c.BusyMutexReturns, "bounded busy retries");
+            Equal(0, c.HeartbeatWrites, "no terminal renewal"); Check(c.Seconds >= 30, "deadline preserved"); AssertCleaned(c);
         });
-
-        Case("terminal cleanup retries busy mutex without another beat", delegate(FakeContext c) {
-            c.BeatReply = delegate {
-                c.BusyMutexAttempts = 2;
-                return Reply(1, "REFUSED " + Token + " CANCELLED");
-            };
-            Equal(0, Run(c), "run result");
-            Equal(2, c.BusyMutexReturns, "cleanup mutex retried");
-            Equal(1.0, c.Seconds, "bounded cleanup retry interval");
-            Equal(1, c.Beats, "no beat after terminal refusal");
-            Equal(0, c.HeartbeatWrites, "no terminal renewal");
-            AssertCleaned(c);
-        });
-
-        Case("deadline remains terminal when cleanup sees a longer timeout", delegate(FakeContext c) {
-            c.BeatReply = delegate { return Reply(0, ""); };
-            bool changed = false;
+        Case("expired deadline remains terminal after timeout metadata changes", delegate(FakeContext c) {
+            c.VpnConnected = false; bool changed = false;
             c.BeforeRead = delegate {
-                if (!changed && c.Seconds >= 30) {
-                    changed = true;
-                    c.State.ProtectionTimeoutSeconds = 120;
-                    c.BusyMutexAttempts = 1;
-                }
+                if (!changed && c.Seconds >= 30) { changed = true; c.State.ProtectionTimeoutSeconds = 120; c.BusyMutexAttempts = 1; }
             };
-            Equal(0, Run(c), "run result");
-            Check(changed, "cleanup observed updated timeout");
-            Equal(6, c.Beats, "no restart after original expiry");
-            Equal(1, c.BusyMutexReturns, "cleanup mutation retry");
-            Equal(30.5, c.Seconds, "sticky terminal cleanup");
-            AssertCleaned(c);
+            Equal(0, Run(c), "run result"); Check(changed, "cleanup read updated timeout");
+            Equal(0, c.HeartbeatWrites, "no revival"); Equal(30.5, c.Seconds, "sticky terminal expiry"); AssertCleaned(c);
         });
-
-        Case("wrong relay PID ownership never kills either child", delegate(FakeContext c) {
-            Child decoy = c.AddChild();
-            c.State.RelayProcessId = decoy.Id;
-            c.State.RelayStartTimeUtcTicks = decoy.StartTicks;
-            Equal(0, Run(c), "run result");
-            Equal(0, c.Beats, "unowned relay cannot renew");
-            Equal(0, c.PinnedRelayRequests, "unowned relay is never selected for kill");
-            Check(c.Children[0].IsAlive && decoy.IsAlive, "both tracked test children remain alive");
-            Equal(1, c.Deletes, "only expired own-token state removed");
+        Case("wrong relay ownership never kills unrelated lifetimes", delegate(FakeContext c) {
+            Child decoy = c.AddChild(); c.State.RelayProcessId = decoy.Id; c.State.RelayStartTimeUtcTicks = decoy.StartTicks;
+            Equal(0, Run(c), "run result"); Equal(0, c.HeartbeatWrites, "wrong owner cannot renew");
+            Equal(0, c.PinnedRelayRequests, "wrong owner never selected");
+            Check(c.Children[0].IsAlive && decoy.IsAlive, "both lifetimes retained"); Equal(1, c.Deletes, "own token only removed");
         });
-
-        Case("stale relay start ticks cannot target a recycled PID", delegate(FakeContext c) {
+        Case("stale relay ticks cannot target recycled PID", delegate(FakeContext c) {
             c.State.RelayStartTimeUtcTicks = (Int64.Parse(c.State.RelayStartTimeUtcTicks, CultureInfo.InvariantCulture) + 1).ToString(CultureInfo.InvariantCulture);
-            Equal(0, Run(c), "run result");
-            Equal(0, c.Beats, "stale identity cannot renew");
-            Equal(0, c.PinnedRelayRequests, "stale identity never reaches kill");
-            Check(c.Children[0].IsAlive, "PID reuse protection retains unrelated lifetime");
+            Equal(0, Run(c), "run result"); Equal(0, c.HeartbeatWrites, "stale owner never renews");
+            Equal(0, c.PinnedRelayRequests, "stale lifetime never selected"); Check(c.Children[0].IsAlive, "unrelated lifetime retained");
         });
-
-        Case("native reconnection verifies identity and persists actual endpoint", delegate(FakeContext c) {
-            c.FailInitialIdentity = true;
-            c.DiscoveryText = "adb-" + Phone + "-native _adb-tls-connect._tcp. 192.0.2.90:40123";
-            c.QuitAfterHeartbeatWrites = 8;
-            Equal(0, Run(c), "run result");
-            Equal(1, c.Connects, "one native reconnect");
-            Equal("192.0.2.1:40123", c.LastConnectedSerial, "dial verified hotspot gateway with discovered port");
-            Equal(1, c.EndpointWrites, "one atomic endpoint update");
-            Equal(8, c.HeartbeatWrites, "reconnected strict heartbeats");
-            Equal(c.LastConnectedSerial, c.State.ConnectEndpoint, "persisted endpoint");
-            Check(c.Children[0].IsAlive, "reconnection never replaces relay");
+        Case("native reconnect verifies phone and persists actual endpoint", delegate(FakeContext c) {
+            c.FailInitialIdentity = true; c.DiscoveryText = "adb-" + Phone + "-native _adb-tls-connect._tcp. 192.0.2.90:40123"; c.QuitAfterHeartbeatWrites = 8;
+            Equal(0, Run(c), "run result"); Equal(1, c.Connects, "one reconnect");
+            Equal("192.0.2.1:40123", c.LastConnectedSerial, "hotspot gateway used");
+            Equal(1, c.EndpointWrites, "endpoint committed"); Equal(8, c.HeartbeatWrites, "full checks healthy"); Check(c.Children[0].IsAlive, "relay retained");
         });
-
         Case("wrong phone identity prevents reconnect and phone stop", delegate(FakeContext c) {
-            c.ReturnedPhoneIdentity = "ANOTHER_PHONE";
-            Equal(0, Run(c), "run result");
-            Equal(0, c.Connects, "no reconnect over a verified wrong phone");
-            Equal(0, c.Beats, "no heartbeat to wrong phone");
-            Equal(0, c.Stops, "no stop sent to wrong phone");
-            Equal(1, c.Deletes, "own expired state cleaned");
-            Check(!c.Children[0].IsAlive, "owned expired relay is stopped");
+            c.ReturnedPhoneIdentity = "ANOTHER_PHONE"; Equal(0, Run(c), "run result");
+            Equal(0, c.Connects, "wrong phone not reconnected"); Equal(0, c.HeartbeatWrites, "wrong phone never renews");
+            Equal(0, c.Stops, "wrong phone never stopped"); Equal(1, c.Deletes, "own state retired");
+            Check(!c.Children[0].IsAlive, "owned relay stopped");
         });
-
         Case("another port listener prevents renewal without killing it", delegate(FakeContext c) {
-            Child decoy = c.AddChild();
-            c.ExtraListener = decoy.Id;
-            Equal(0, Run(c), "run result");
-            Equal(0, c.Beats, "ambiguous listener cannot renew");
-            Check(!c.Children[0].IsAlive, "owned expired relay stopped");
-            Check(decoy.IsAlive, "other listener process retained");
+            Child decoy = c.AddChild(); c.ExtraListener = decoy.Id;
+            Equal(0, Run(c), "run result"); Equal(0, c.HeartbeatWrites, "ambiguous listener never renews");
+            Check(!c.Children[0].IsAlive, "own relay stopped"); Check(decoy.IsAlive, "other listener retained");
         });
-
-        Case("missing established phone socket cannot renew or restart VPN", delegate(FakeContext c) {
-            c.HasEstablishedConnection = false;
-            Equal(0, Run(c), "run result");
-            Equal(0, c.Beats, "no established socket prevents renewal");
-            Equal(30.0, c.Seconds, "independent expiry");
-            AssertCleaned(c);
+        Case("missing established socket cannot renew or restart VPN", delegate(FakeContext c) {
+            c.HasEstablishedConnection = false; Equal(0, Run(c), "run result");
+            Equal(0, c.HeartbeatWrites, "missing socket never renews"); Equal(30.0, c.Seconds, "independent expiry"); AssertCleaned(c);
         });
-
-        Case("unexpected successful acknowledgement is terminal", delegate(FakeContext c) {
-            c.BeatReply = delegate { return Reply(0, "OK " + OtherToken); };
-            Equal(0, Run(c), "run result");
-            Equal(1, c.Beats, "unexpected response ends renewal");
-            Equal(0, c.HeartbeatWrites, "wrong token cannot renew");
-            Equal(0.0, c.Seconds, "unexpected nonempty success is terminal");
-            AssertCleaned(c);
+        Case("legacy phone guard session is never adopted by PC-only monitor", delegate(FakeContext c) {
+            c.State.ProtectionMode = null; c.State.PhoneControlPath = "/data/local/tmp/codex-wireless-internet/" + Token + "/control.sh";
+            AssertReplacementExit(c);
         });
-
         Console.WriteLine(new JavaScriptSerializer().Serialize(new {
             suite = "WatchdogChecks", cases = Results.Count, assertions = assertions,
             failures = failures, realAdbCalls = 0, results = Results
@@ -240,6 +159,11 @@ internal static class WatchdogChecks
 
     static void Case(string name, Action<FakeContext> test)
     {
+        if (focused && name != "complete chain checks renew beyond initial deadline without phone guard" &&
+            name != "disconnected VPN cannot renew and expires after thirty seconds" &&
+            name != "late successful full-chain observation cannot revive expired monitor" &&
+            name != "offline ADB cleans PC resources without claiming phone VPN stopped" &&
+            name != "legacy phone guard session is never adopted by PC-only monitor") return;
         Stopwatch elapsed = Stopwatch.StartNew();
         int before = assertions;
         string error = null;
@@ -320,13 +244,13 @@ internal static class WatchdogChecks
         public readonly List<double> HeartbeatTimes = new List<double>();
         public RuntimeState State;
         public Action BeforeRead;
-        public Func<RuntimeCommandResult> BeatReply;
-        public int Beats, Stops, Deletes, HeartbeatWrites, EndpointWrites, ReverseRepairs, Connects, VpnReads;
+        public Action OnVpnRead;
+        public int Stops, Deletes, HeartbeatWrites, EndpointWrites, ReverseRepairs, Connects, VpnReads;
         public int PinnedRelayRequests, ForbiddenActions, LockDepth, BusyMutexAttempts, BusyMutexReturns;
         public int QuitAfterHeartbeatWrites, ExtraListener;
         public string ReverseDestination = "tcp:31416", ReturnedPhoneIdentity = Phone;
         public string DiscoveryText = "", LastConnectedSerial;
-        public bool FailInitialIdentity, HasEstablishedConnection = true;
+        public bool FailInitialIdentity, PhoneOffline, VpnConnected = true, HasEstablishedConnection = true;
         public double Seconds;
         int sleeps;
 
@@ -347,7 +271,7 @@ internal static class WatchdogChecks
                     WatchdogProcessId = current.Id,
                     WatchdogStartTimeUtcTicks = current.StartTime.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture),
                     WatchdogPath = WorkerPath, RuntimeEngine = "CSharp",
-                    PhoneControlPath = "/data/local/tmp/codex-wireless-internet/" + Token + "/control.sh",
+                    ProtectionMode = "PcOnly",
                     RawFields = new Dictionary<string, object> { { "unknownTestField", "preserved" } }
                 };
             }
@@ -458,7 +382,7 @@ internal static class WatchdogChecks
             if (arguments.Length >= 3 && arguments[0] == "-s") {
                 string[] command = arguments.Skip(2).ToArray();
                 if (Is(command, "shell", "getprop", "ro.serialno")) {
-                    if (FailInitialIdentity && Connects == 0) return Reply(1, "");
+                    if (PhoneOffline || (FailInitialIdentity && Connects == 0)) return Reply(1, "");
                     return Reply(0, ReturnedPhoneIdentity);
                 }
                 if (Is(command, "reverse", "--list"))
@@ -470,14 +394,9 @@ internal static class WatchdogChecks
                 }
                 if (Is(command, "shell", "dumpsys", "connectivity")) {
                     VpnReads++;
-                    return Reply(0, "Current Networks:\n  NetworkAgentInfo{network{42} ni{VPN CONNECTED extra: VPN:com.genymobile.gnirehtet} lp{InterfaceName: tun0}");
+                    if (OnVpnRead != null) OnVpnRead(); return Reply(0, VpnConnected ? "Current Networks:\n  NetworkAgentInfo{network{42} ni{VPN CONNECTED extra: VPN:com.genymobile.gnirehtet} lp{InterfaceName: tun0}" : "Current Networks:");
                 }
-                if (command.Length == 5 && command[0] == "shell" && command[1] == "sh" &&
-                    command[2] == "/data/local/tmp/codex-wireless-internet/" + Token + "/control.sh" && command[4] == Token) {
-                    RequireMutation();
-                    if (command[3] == "beat") { Beats++; return BeatReply == null ? Reply(0, "OK " + Token) : BeatReply(); }
-                    if (command[3] == "stop") { Stops++; return Reply(0, "STOPPED " + Token); }
-                }
+
             }
             throw Forbidden("unexpected ADB command: " + String.Join(" ", arguments));
         }
@@ -491,11 +410,15 @@ internal static class WatchdogChecks
 
         public override Dictionary<string, object> ReadConfig() { throw Forbidden("config read"); }
         public override RuntimeCommandResult Run(string executable, string[] arguments, bool allowFailure = false, int timeoutMs = 8000, IDictionary<string, string> environment = null) { throw Forbidden("external process execution"); }
-        public override RuntimeCommandResult Gnirehtet(string[] arguments, bool allowFailure = false, int timeoutMs = 8000) { throw Forbidden("gnirehtet start or stop"); }
-        public override RuntimeCommandResult Guard(RuntimeState state, string command, bool allowFailure = false, int timeoutMs = 8000) { throw Forbidden("guard API: " + command); }
+        public override RuntimeCommandResult Gnirehtet(string[] arguments, bool allowFailure = false, int timeoutMs = 8000)
+        {
+            RequireMutation(); Require(allowFailure && timeoutMs <= 3000, "best-effort bounded phone stop");
+            if (arguments.Length != 2 || arguments[0] != "stop" || arguments[1] != State.WirelessSerial)
+                throw Forbidden("unexpected gnirehtet operation");
+            Stops++; VpnConnected = false; return Reply(0, "stopped");
+        }
         public override Process StartDetached(string executable, string[] arguments) { throw Forbidden("detached process"); }
         public override Process GetOwnedMonitor(RuntimeState state, bool pinHandle = false) { throw Forbidden("another monitor process"); }
-        public override PhoneGuardLease ExtractPhoneGuard() { throw Forbidden("guard extraction"); }
         public override bool PhoneVpnConnected(string serial) { throw Forbidden("unmocked VPN helper"); }
         public override bool WifiHasIPv6Default(int index) { throw Forbidden("live routing helper"); }
         public void Dispose()

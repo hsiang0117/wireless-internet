@@ -78,7 +78,6 @@ static class AndroidClientChecks
         Check(!AndroidProtocol.PhoneVpnConnected("  NetworkAgentInfo{network{123} extra ni{VPN CONNECTED extra: VPN:other.package}"), "other VPN does not satisfy gnirehtet fact");
         Check(AndroidProtocol.ReverseReady("fixture localabstract:gnirehtet tcp:31416"), "legacy controller reverse recognition preserved");
         Check(!AndroidProtocol.ReverseReady("localabstract:gnirehtet tcp:12345"), "wrong reverse target rejected");
-        Check(AndroidProtocol.GuardActive("ACTIVE abc 123 123", "abc") && !AndroidProtocol.GuardActive("ACTIVE other 123", "abc"), "guard activity is token-specific");
         Check(AndroidProtocol.OwnerVpnRestrictions("other output") == OwnerVpnRestrictionState.OwnerMissing, "missing owner distinguished");
         Check(AndroidProtocol.OwnerVpnRestrictions(RestrictionDump("no records")) == OwnerVpnRestrictionState.Unknown, "unknown owner mode distinguished");
         string disabled = Mode("2026-01-01T00:00:01", "false", "false");

@@ -18,7 +18,7 @@ namespace WirelessInternet
         const string ReverseName = "localabstract:gnirehtet";
         const string ReverseDestination = "tcp:31416";
         readonly RuntimeContext context;
-        string sessionToken, controlPath, selfStartTicks;
+        string sessionToken, selfStartTicks;
         int selfId, timeoutSeconds = 30;
         long lastHealthyAt;
 
@@ -37,7 +37,6 @@ namespace WirelessInternet
         {
             if (!Regex.IsMatch(token ?? String.Empty, "^[0-9a-f]{32}$")) return 2;
             sessionToken = token;
-            controlPath = "/data/local/tmp/codex-wireless-internet/" + token + "/control.sh";
             using (Process self = Process.GetCurrentProcess())
             {
                 selfId = self.Id;
@@ -77,43 +76,36 @@ namespace WirelessInternet
                         if (DeadlineReached())
                         {
                             terminal = true;
-                            throw new IOException("Protected heartbeat deadline reached during recovery.");
+                            throw new IOException("PC connection-monitor deadline reached during recovery.");
                         }
 
-                        RuntimeCommandResult beat = SessionAdb(new string[] {
-                            "-s", serial, "shell", "sh", controlPath, "beat", sessionToken });
-                        if (beat.Success && String.Equals(beat.Text, "OK " + sessionToken, StringComparison.Ordinal))
-                        {
-                            // An answer that arrives after our own deadline cannot revive this monitor.
+                        long observedAt = 0;
+                        InSession(delegate(RuntimeState latest) {
+                            // Only a complete successful chain check may renew the PC deadline.
+                            // Waiting for a session lock or a late observation cannot revive it.
                             if (DeadlineReached())
                             {
                                 terminal = true;
-                                throw new IOException("Protected heartbeat acknowledgement arrived after expiry.");
+                                throw new IOException("PC connection check completed after expiry.");
                             }
-                            InSession(delegate(RuntimeState latest) {
-                                latest.MonitorHeartbeatQpcTicks = context.Timestamp.ToString(CultureInfo.InvariantCulture);
-                                context.WriteState(latest);
-                                return true;
-                            });
-                            lastHealthyAt = context.Timestamp;
-                        }
-                        else if (Regex.IsMatch(beat.Text ?? String.Empty,
-                            "(?m)^REFUSED[ \\t]+" + Regex.Escape(sessionToken) + "\\b") ||
-                            (beat.Success && !String.IsNullOrEmpty(beat.Text)))
+                            observedAt = context.Timestamp;
+                            latest.MonitorHeartbeatQpcTicks = observedAt.ToString(CultureInfo.InvariantCulture);
+                            context.WriteState(latest);
+                            return true;
+                        });
+                        if (DeadlineReached())
                         {
-                            // EXPIRED, CANCELLED, SUPERSEDED and any unexpected successful
-                            // acknowledgement are terminal. Never arm or restart a phone guard here.
                             terminal = true;
-                            continue;
+                            throw new IOException("PC connection-check acknowledgement completed after expiry.");
                         }
-                        else throw new IOException("The phone guard did not acknowledge the protected heartbeat.");
+                        lastHealthyAt = observedAt;
                     }
                     catch (SessionChangedException) { return 0; }
                     catch (SessionBusyException) { context.Sleep(500); continue; }
                     catch (Exception)
                     {
-                        // No default log files or console output. Both expiry mechanisms remain
-                        // independent of the GUI and a failed observation cannot renew either one.
+                        // No default log files or console output. PC monitoring remains
+                        // independent of the GUI; failed observations never renew its deadline.
                     }
                     if (terminal) continue;
                     double remaining = HealthySweepMilliseconds - context.ElapsedSeconds(cycleStarted) * 1000.0;
@@ -122,7 +114,8 @@ namespace WirelessInternet
             }
             catch (Exception)
             {
-                // If the monitor itself fails, the already armed phone-local guard still expires.
+                // No phone-local guard is installed. A stopped PC monitor cannot close
+                // the phone VPN; it may need to be disconnected manually on the phone.
                 return 1;
             }
         }
@@ -150,9 +143,10 @@ namespace WirelessInternet
                 !String.Equals(state.RuntimeEngine, "CSharp", StringComparison.Ordinal) ||
                 !SamePath(state.WatchdogPath, context.WorkerPath))
                 throw new SessionChangedException();
-            if (state.Transport != "NativeTls" || state.ProtectionTimeoutSeconds < 15 || state.ProtectionTimeoutSeconds > 120)
+            if (state.Transport != "NativeTls" || state.ProtectionMode != "PcOnly" ||
+                state.ProtectionTimeoutSeconds < 15 || state.ProtectionTimeoutSeconds > 120)
                 throw new IOException("Invalid protection-session configuration.");
-            if (!String.Equals(state.PhoneControlPath, controlPath, StringComparison.Ordinal) ||
+            if (!String.IsNullOrEmpty(state.PhoneControlPath) ||
                 !SamePath(state.RelayPath, context.RelayPath))
                 throw new IOException("Unexpected protection-session path.");
             long relayTicks;
@@ -299,7 +293,8 @@ namespace WirelessInternet
             catch (SessionChangedException) { return true; }
             catch (Exception) { return true; }
 
-            // Best effort only: the independent phone guard also handles a powered-off PC.
+            // Phone shutdown is best effort. With no phone-local guard, a lost ADB
+            // connection or powered-off PC cannot guarantee closing the phone VPN.
             // Read-only identity checks may run outside the mutex; every mutation rechecks it.
             string serial = snapshot.WirelessSerial;
             if (ValidSerial(serial, null))
@@ -308,7 +303,17 @@ namespace WirelessInternet
                 {
                     RuntimeCommandResult identity = Adb(new string[] { "-s", serial, "shell", "getprop", "ro.serialno" }, 1500);
                     if (identity.Success && String.Equals(identity.Text, snapshot.PhoneIdentity, StringComparison.Ordinal))
-                        SessionAdb(new string[] { "-s", serial, "shell", "sh", controlPath, "stop", sessionToken }, 3000);
+                    {
+                        InSession(delegate(RuntimeState current) {
+                            // Gnirehtet performs its fixed STOP action; no script is
+                            // installed or started on the phone for timeout handling.
+                            context.Gnirehtet(new string[] { "stop", serial }, true, 3000);
+                            return true;
+                        });
+                        // A failure or still-connected reply must not prevent local
+                        // retirement, nor be presented as a confirmed phone shutdown.
+                        Adb(new string[] { "-s", serial, "shell", "dumpsys", "connectivity" }, 1500);
+                    }
                 }
                 catch (SessionBusyException) { return false; }
                 catch (SessionChangedException) { return true; }

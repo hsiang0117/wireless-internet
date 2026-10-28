@@ -1,6 +1,6 @@
 ﻿# 源码与构建
 
-本文对应无线网络共享 1.9.2。使用流程见仓库根目录 [README](../README.md)，离线测试见 [tests/README.md](../tests/README.md)。
+本文对应无线网络共享 1.10.0。使用流程见仓库根目录 [README](../README.md)，离线测试见 [tests/README.md](../tests/README.md)。
 
 ## 三个独立项目
 
@@ -9,7 +9,7 @@
 | 项目 | 源文件 | 目标 |
 | --- | --- | --- |
 | `WirelessInternet.csproj` | `Program`、`Backend`、`WorkerActionClient`、`ActionProtocol`、监控组件、日志视图与自绘控件、`MemoryLog`、`AppForm`、`SetupForm`、`SetupBackend`、`AndroidProtocol`、`UiDpi`、`ProcessExecution`、`SessionStatus`、`UiOperationCoordinator` | `WirelessInternet.exe`，WinExe |
-| `ConnectionWorker.csproj` | `WorkerHost`、`ActionProtocol`、`RuntimeCommon`、`RuntimeSessionStore`、`OwnedProcessManager`、`AndroidDeviceClient`、`AndroidProtocol`、`NativeNetwork`、`ConnectionController`、`ConnectionOperation`、`WatchdogController`、`PhoneGuardSource`、`ProcessExecution` | `ConnectionWorker.exe`，Exe |
+| `ConnectionWorker.csproj` | `WorkerHost`、`ActionProtocol`、`RuntimeCommon`、`RuntimeSessionStore`、`OwnedProcessManager`、`AndroidDeviceClient`、`AndroidProtocol`、`NativeNetwork`、`ConnectionController`、`ConnectionOperation`、`WatchdogController`、`ProcessExecution` | `ConnectionWorker.exe`，Exe |
 | `RelayLogHost.csproj` | `RelayLogHost`、`MemoryLog` | `RelayLogHost.exe`，WinExe |
 
 程序集引用和源清单只在项目文件中维护。共享源码分别编入需要它的组件，保持桌面、连接/保护 worker 和日志 host 的现有进程边界，不增加运行时共享 DLL。
@@ -45,7 +45,7 @@ Write-Output $out
 | 组件 | 职责与边界 |
 | --- | --- |
 | `AndroidDeviceClient` | worker 的手机发现与身份、系统开关及 VPN 限制检查；启动阶段仍保留原重试策略 |
-| `AndroidProtocol` | 无 I/O 的 mDNS、IPv4 端点、VPN、反向隧道及守护回复解析；Setup 人工端口验证与 Watchdog 恢复策略由各调用方保留 |
+| `AndroidProtocol` | 无 I/O 的 mDNS、IPv4 端点、VPN 和反向隧道解析；Setup 人工端口验证与 Watchdog 恢复策略由各调用方保留 |
 | `RuntimeSessionStore` | 配置读取、会话校验与原子保存、未知字段保留、按 token 删除；调用者负责原有操作锁 |
 | `OwnedProcessManager` | 按 PID、启动时间和准确路径核验进程，固定进程句柄后操作；保留后台组件的标准句柄隔离 |
 | `RuntimeContext` | 兼容门面，保留现有虚方法和调用入口并转发到服务，使注入测试及原调用方能逐步迁移 |
@@ -97,7 +97,9 @@ GUI 与 worker 使用 `app.manifest`，保留 `dpiAware=true` 的 SystemAware �
 
 继续保留 1.5.1 的采样策略：`PhoneSamplingPolicy` 默认每 3 秒采样，缓存速度只在采样年龄不超过 4 秒时有效。主窗口显示且未最小化时采样，切到 TCP 连接页仍会采样。主窗口最小化或收起到托盘后不再发起新的非安全手机统计查询，已在途的查询允许完成；恢复显示时立即采样并重建速度基线，到下一个完整采样间隔后才显示速度。正常节流不记作采样失败，也不重复添加曲线点。速度为最近采样间隔的平均值，累计流量仍来自手机 VPN 接口计数，不能将暂停采样理解为暂停传输。
 
-独立 worker 的约 5 秒保护检查、手机会话心跳及默认 30 秒失联阈值保持不变。手机守护用 shell 内建 `read`／`printf` 替代小文件读取中的外部 `cat`，活性标记 `watch_tick` 约每 5 秒原子写入一次，写入失败下轮重试。手机每秒检查会话／心跳期限、原有 10 秒守护活性阈值保持不变；这些保护仍按会话运行，不依赖界面统计定时器。此前的命令和写入计数不等于已经测得的耗电降幅；1.6.0 没有调整这些保护与采样参数。
+独立 worker 约每 5 秒执行完整共享链路检查，默认在最后一次成功检查约 30 秒后执行电脑端超时清理。只有中继归属、监听、网络、手机身份、反向隧道、VPN 和已建立连接全部通过，才更新单调时钟健康时间；晚到结果不能复活已经过期的会话。这项电脑监控独立于界面统计定时器。
+
+1.10.0 不再编入或下发 `PhoneGuardSource`，也不执行手机 `arm`／`beat`／`cancel` 脚本。新会话使用 `ProtectionMode=PcOnly`，`PhoneControlPath` 为空；旧手机守护格式只为保守读取、失效恢复保留，不能被新 Start 或 monitor 接管。正常断开直接使用 gnirehtet STOP；超时仅在身份和会话可核实时尽力停止手机 VPN，失败仍按归属清理电脑资源，不宣称手机已停止。电脑掉电或 ADB 断开后，请手动关闭手机 VPN。
 
 ## 打包边界
 
@@ -105,6 +107,6 @@ GUI 与 worker 使用 `app.manifest`，保留 `dpiAware=true` 的 SystemAware �
 
 打包使用显式文件清单，仅发布未绑定的默认配置，保留第三方 NOTICE/LICENSE 原文。README、LICENSE、源码 BUILD.md 和自写 THIRD-PARTY.md 随运行包提供。
 
-电脑端运行不依赖 PowerShell；工作区 `build.ps1` 只是调用 solution 并生成开发图标的辅助工具，不是运行依赖，不放进安装包。手机守护文本仍内置于 C#，按会话临时传输。
+电脑端运行不依赖 PowerShell。PowerShell 脚本只用于开发、测试和打包，不是运行依赖，不放进安装包。连接时不下发守护脚本，不创建额外手机常驻进程；gnirehtet VPN 和系统无线调试仍需运行。
 
 本机 `wireless-config.json`、活动 `state/`、调试输出、真实网络报告、ADB 凭据及备份不属于源码或发布输入。网络检查和进程清理的保护边界不因工程文件拆分而改变。

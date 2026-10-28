@@ -39,7 +39,7 @@ internal static class ConnectionResultChecks
             c.BeginAction(); var stop = controller.StopWithResult(c.Output.Add);
             Check(stop.Success && stop.ExitCode == 0 && stop.Stage == ConnectionStage.Completed && stop.Operation == ConnectionOperationKind.Stop, "stop result identity");
             var expectedStop = new[] { ConnectionStage.AcquireOperation, ConnectionStage.ValidateConfiguration, ConnectionStage.ResolveDevice, ConnectionStage.VerifyDevice,
-                ConnectionStage.VerifyOwnership, ConnectionStage.StopPhoneVpn, ConnectionStage.CancelPhoneGuard, ConnectionStage.StopMonitor, ConnectionStage.RemoveTunnel,
+                ConnectionStage.VerifyOwnership, ConnectionStage.StopPhoneVpn, ConnectionStage.StopMonitor, ConnectionStage.RemoveTunnel,
                 ConnectionStage.StopRelay, ConnectionStage.RemoveSession, ConnectionStage.DisconnectDevice, ConnectionStage.ReleaseOperation, ConnectionStage.Completed };
             Check(stop.Stages.SequenceEqual(expectedStop), "ordered stop history");
             Check(Object.ReferenceEquals(stop, controller.LastResult), "LastResult advances to stop");
@@ -51,11 +51,9 @@ internal static class ConnectionResultChecks
         Failure("ambiguous native endpoint", "discovery", ConnectionStage.ResolveDevice);
         Failure("wrong phone identity", "identity", ConnectionStage.VerifyDevice);
         Failure("relay creation", "host-create", ConnectionStage.AcquireRelay);
-        Failure("guard arming", "guard-arm", ConnectionStage.PrepareProtection);
         Failure("first session commit", "state-first", ConnectionStage.CommitSession);
         Failure("phone disconnect after commit", "tunnel-offline", ConnectionStage.EstablishTunnel);
         Failure("VPN not ready", "vpn-denied", ConnectionStage.EstablishTunnel);
-        Failure("refused startup heartbeat", "beat-refused", ConnectionStage.EstablishTunnel);
         Failure("monitor creation", "monitor-create", ConnectionStage.StartMonitor);
         Failure("first heartbeat acknowledgement", "ack", ConnectionStage.AwaitProtection);
         StopFailure("wrong relay owner", "relay", ConnectionStage.VerifyOwnership);
@@ -69,8 +67,8 @@ internal static class ConnectionResultChecks
             Check(!result.Success && result.ExitCode == 1 && result.Stage == ConnectionStage.ReleaseOperation, "release failure has exact failed start stage");
             Check(!result.Stages.Contains(ConnectionStage.Completed) && !result.Stages.Contains(ConnectionStage.AwaitProtection), "start never reports completion or waits for ack after release failure");
             Check(c.PrimaryReleaseInvocations == 1 && c.LockDepth == 0, "primary lease disposal attempted exactly once");
-            Check(c.GuardStopAttempts == 1 && c.GuardStops == 1 && c.LocklessGuardStops == 1, "new guard cleanup remains token protected after PC lease release");
-            Check(c.State != null && c.Relay.IsAlive && !c.Vpn, "committed relay retained for normal recovery");
+            Check(c.GnirehtetStops == 0 && c.LockViolations == 0, "post-release failure cannot stop a concurrently reused session");
+            Check(c.State != null && c.Relay.IsAlive && c.Vpn, "committed resources retained for monitor or explicit recovery");
             Check(Object.ReferenceEquals(result, controller.LastResult) && result.Message.Contains("lease release"), "release failure reason published");
         });
         Case("Stop lease release exception does not publish successful completion", delegate(FakeContext c) {
